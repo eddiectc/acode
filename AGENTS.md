@@ -29,6 +29,11 @@ Non-negotiables:
   framework, or a UUID/JSON Schema/retry library.
 - `cmd/acode` is wiring and I/O only. `internal/tui` is display-only. Do not
   implement a loop, projection, tool, provider adapter, or session schema here.
+- Never work around aharness. The SDK is owned by the same author and open to
+  suggestions, so a missing capability, wrong contract, or awkward API is fixed
+  there, not here. Propose the change upstream; do not add app-side shims,
+  patches, vendored copies, `replace` forks, or duplicated contract logic to
+  compensate for the SDK.
 - Pin the aharness dependency to a tagged release in `go.mod`.
 - User-visible branding is acode: the `acode` binary, `ACODE_*` environment
   variables, `~/.acode` state, the user agent, temp names, and docs. Do not add
