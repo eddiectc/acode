@@ -53,6 +53,7 @@ for status, deviations, and verification notes.
 
 | Document | Status |
 |---|---|
+| [plans/engine-host-build.md](plans/engine-host-build.md) | Proposed 2026-11-18 |
 | [plans/transcript-folding-build.md](plans/transcript-folding-build.md) | Implemented 2026-11-14; real-provider fold smoke pending |
 | [plans/tui-build.md](plans/tui-build.md) | Implemented 2026-11-10 |
 
