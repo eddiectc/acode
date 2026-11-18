@@ -33,15 +33,8 @@ no loop, projection, tool implementation, provider wire format, or session
 schema in this repository. A change to those belongs in aharness and is then
 picked up through the module dependency.
 
-The module is `github.com/eddiectc/acode`. While the SDK is developed in the
-sibling checkout, `go.mod` carries:
-
-```text
-replace github.com/eddiectc/aharness => ../aharness
-```
-
-That local replace is a development aid, not a public release mechanism. Remove
-it when a tagged aharness version is available and pin that version instead.
+The module is `github.com/eddiectc/acode`. It depends on the tagged aharness
+release pinned in `go.mod`.
 
 ## 2. Package layout
 

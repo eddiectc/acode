@@ -23,8 +23,8 @@ only with a recorded reason; **MAY** = optional.
 - The module is `github.com/eddiectc/acode`. It is the coding-agent
   application: `cmd/acode` is the CLI/TUI host and `internal/tui` is the
   display-only front end. It imports the aharness SDK for the loop, model,
-  tools, and session. Do not copy SDK logic here; change the sibling module and
-  update the dependency.
+  tools, and session. Do not copy SDK logic here; change the aharness module
+  and update the dependency.
 - Runtime dependencies: **stdlib by default**. The standard library is the
   default answer; a new runtime dependency MUST be justified in review against
   a stdlib alternative. The approved TUI exception is in §3. The aharness SDK
@@ -35,10 +35,7 @@ only with a recorded reason; **MAY** = optional.
   `golangci-lint`, `govulncheck`. Pin them in CI; do not commit a `tool`
   directive unless the team explicitly chooses that tradeoff.
 - Commit `go.mod` and, when a dependency exists, `go.sum`. Run `go mod tidy`
-  and `go mod verify`. The local `replace github.com/eddiectc/aharness =>
-  ../aharness` is allowed only while the SDK is unreleased and the sibling
-  checkout is present; remove it when a tagged SDK version is available. No
-  vendoring.
+  and `go mod verify`. Pin the aharness SDK to a tagged release. No vendoring.
 - Run `go fix ./...` before review for modernizers, and `go doc -ex` when
   writing examples.
 - Build with `-trimpath`; do not strip symbols by default. Tests with `-race`

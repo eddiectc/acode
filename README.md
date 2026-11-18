@@ -34,10 +34,8 @@ export ACODE_PROVIDER_TOKEN=...   # omit for a local no-auth endpoint
 ./bin/acode -fork <session-id>
 ```
 
-Building requires Go 1.27.4 or newer. The module uses a local
-`replace github.com/eddiectc/aharness => ../aharness` while the SDK is developed
-in the sibling repository; keep that checkout present, or remove the replace
-once a tagged aharness release is available.
+Building requires Go 1.27.4 or newer. The module pins a tagged aharness
+release.
 
 In the TUI and `-ui-json`, the task is
 optional: a new session is created eagerly, the header shows its ID, and the

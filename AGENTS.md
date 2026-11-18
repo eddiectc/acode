@@ -4,8 +4,8 @@ This repository is **acode**, the first-party coding-agent application. It
 depends on the [aharness SDK](https://github.com/eddiectc/aharness) for the
 model/tool loop, model adapters, built-in tools, session store, and durable
 contracts. acode owns the CLI, TUI, configuration, signals, presentation, and
-exit codes. Do not copy SDK logic into this repository; change the sibling
-`../aharness` module and update the dependency.
+exit codes. Do not copy SDK logic into this repository; change the aharness
+module and update the dependency.
 
 The Go coding standard is [docs/coding-standard.md](docs/coding-standard.md).
 Read it before editing Go code. It is normative: **MUST** / **SHOULD** / **MAY**
@@ -29,9 +29,7 @@ Non-negotiables:
   framework, or a UUID/JSON Schema/retry library.
 - `cmd/acode` is wiring and I/O only. `internal/tui` is display-only. Do not
   implement a loop, projection, tool, provider adapter, or session schema here.
-- Keep the local `replace github.com/eddiectc/aharness => ../aharness` only
-  while the SDK is unreleased and the sibling checkout is present. Remove it
-  when a tagged version is available.
+- Pin the aharness dependency to a tagged release in `go.mod`.
 - User-visible branding is acode: the `acode` binary, `ACODE_*` environment
   variables, `~/.acode` state, the user agent, temp names, and docs. Do not add
   migration code for an older agent's state.

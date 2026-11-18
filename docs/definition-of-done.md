@@ -34,8 +34,8 @@ reference, never the dated record.
 - [ ] **App boundary.** The change stays in `cmd/acode`, `internal/tui`,
       scripts, or app docs. It does not copy loop, projection, tool, provider,
       or session-schema logic out of the aharness SDK. An SDK change is a
-      separate change in the sibling aharness repository, followed by a module
-      update here.
+      separate change in the aharness repository, followed by a module update
+      here.
 - [ ] **SDK contracts.** acode consumes `Result.Status`, display events,
       history, state, catalog, and tool DTOs as the SDK defines them. It does
       not reinterpret the session schema, prompt/tool grant, projection, or
@@ -43,8 +43,7 @@ reference, never the dated record.
 - [ ] **CLI/TUI compatibility.** New flags, environment variables, config keys,
       slash commands, protocol fields, and exit codes are documented in the
       current reference and the README.
-- [ ] **Local replace.** `go.mod` keeps the sibling `../aharness` replace only
-      while the SDK is unreleased. A published-version change removes it.
+- [ ] **Pinned SDK.** `go.mod` pins a released aharness version.
 - [ ] **Errors and pairing.** Errors wrap with `%w` and are classified with
       `errors.Is`/`errors.As`; every tool call has exactly one result.
 
