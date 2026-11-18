@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	jsonv2 "encoding/json/v2"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,24 +16,11 @@ import (
 // header row. The transcript keeps the remaining rows.
 const maxTodoWidgetRows = 8
 
-// todoDetails is the structured payload the todo tool records in a successful
-// result. The widget reads it instead of parsing the rendered checklist.
-type todoDetails struct {
-	Items []tools.TodoItem `json:"items"`
-}
-
 // todoFromDetails decodes a todo tool result's details. It reports false when
 // the payload is absent or malformed, in which case the widget keeps its
 // previous list.
 func todoFromDetails(raw json.RawMessage) ([]tools.TodoItem, bool) {
-	if len(raw) == 0 {
-		return nil, false
-	}
-	var details todoDetails
-	if err := jsonv2.Unmarshal(raw, &details); err != nil {
-		return nil, false
-	}
-	return details.Items, true
+	return tools.ParseTodoDetails(raw)
 }
 
 // setTodos installs the checklist shown by the widget. An empty list hides it.

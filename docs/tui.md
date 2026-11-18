@@ -356,11 +356,13 @@ While the child is running, a composer submission is routed to that child's
 steering channel instead of the parent's. The child consumes it at its next
 turn boundary and records it as a `user_message` with
 `source=subagent-steer`; the view labels that line `delegation steer`, and the
-parent transcript gains no item. A line sent while a model call is in flight
-shows as `queued…` and becomes a recorded line once the child reaches the next
-boundary. `SubagentProgress` and `SubagentFinished` refresh the view; it never
-polls a timer. A finished child opens read-only and refuses steering with a
-notice.
+parent transcript gains no item. Each submission carries a host-assigned
+steering ID, and the SDK echoes it on `SubagentMessageRecorded`, so the view
+drops exactly the line the child accepted even when two submissions have
+identical text. A line sent while a model call is in flight shows as `queued…`
+until that acknowledgement. `SubagentProgress` and `SubagentFinished` refresh
+the view; it never polls a timer. A finished child opens read-only and refuses
+steering with a notice.
 
 `Esc` returns to the parent without interrupting the child; with a non-empty
 composer it first clears the draft, like the parent view. A second `Esc` at the

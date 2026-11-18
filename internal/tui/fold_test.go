@@ -316,7 +316,7 @@ func TestProtocolKeyAcceptsF3(t *testing.T) {
 // prove that the fold changes frame content without changing the protocol.
 type reasoningHost struct{ *fakeHost }
 
-func (h *reasoningHost) Start(_ Submission, _ RunOptions, _ <-chan string, display func(agent.DisplayEvent) error) (Run, error) {
+func (h *reasoningHost) Start(_ Submission, _ RunOptions, _ <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (Run, error) {
 	done := make(chan agent.Result, 1)
 	run := &fakeRun{done: done}
 	go func() {

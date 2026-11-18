@@ -388,10 +388,13 @@ func TestTUIHostSettingCatalogValidation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	host := settingsHost(t, path, dir)
-	host.catalog = map[string]model.CatalogModel{
-		"supported": {ID: "supported", Dialect: model.DialectChat, Reasoning: true, ReasoningEfforts: []string{"low", "high"}},
-		"unusable":  {ID: "unusable", Unavailable: "missing base URL"},
-	}
+	host.catalog = model.Catalog{Models: map[string]model.CatalogModel{
+		"supported": {
+			ID: "supported", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL,
+			ContextWindow: 200_000, Reasoning: true, ReasoningEfforts: []string{"low", "high"},
+		},
+		"unusable": {ID: "unusable", Unavailable: "missing base URL"},
+	}}
 	if err := host.SetSetting("model", "absent"); err == nil || !strings.Contains(err.Error(), "not in the loaded catalog") {
 		t.Fatalf("absent model = %v", err)
 	}

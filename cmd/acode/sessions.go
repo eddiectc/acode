@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
-	"time"
 
 	"github.com/eddiectc/acode/internal/tui"
 	"github.com/eddiectc/aharness/agent"
+	"github.com/eddiectc/aharness/engine"
 	"github.com/eddiectc/aharness/model"
 	"github.com/eddiectc/aharness/session"
 )
@@ -42,14 +38,14 @@ func (h *tuiHost) prepareRunLocked(opts tui.RunOptions, warn func(string)) (stri
 		modelName = h.cfg.Model
 	}
 	if modelName != h.cfg.Model {
-		m, ok := h.catalog[modelName]
+		m, ok := h.catalog.Models[modelName]
 		if !ok {
 			return "", "", fmt.Errorf("model %q is not in the loaded catalog", modelName)
 		}
 		if err := applyCatalogModel(&h.cfg, m, warn); err != nil {
 			return "", "", err
 		}
-		h.cfg.Pricing = m.Pricing(h.catalogSource, h.catalogFetchedAt)
+		h.cfg.Pricing = catalogPrice(h.catalog, modelName)
 		if m.Deprecated {
 			warn("model " + m.ID + " is deprecated")
 		}
@@ -57,7 +53,7 @@ func (h *tuiHost) prepareRunLocked(opts tui.RunOptions, warn func(string)) (stri
 			return "", "", err
 		}
 	}
-	resolveRunThinkingEffort(&h.cfg, h.catalog, modelName, opts, warn)
+	resolveRunThinkingEffort(&h.cfg, h.catalog.Models, modelName, opts, warn)
 	return modelName, h.cfg.Dialect, nil
 }
 
@@ -76,16 +72,11 @@ func (h *tuiHost) sessionSwitchReadyLocked() error {
 // session switch. Without a loaded catalog the recorded model remains a
 // visible, unswitchable fallback, exactly as at startup.
 func (h *tuiHost) rebuildModelsLocked() {
-	if h.catalog == nil {
+	if h.catalog.Models == nil {
 		h.models = []tui.ModelChoice{h.recordedChoiceLocked(false)}
 		return
 	}
-	h.setCatalogLocked(model.Catalog{
-		Provider:  h.cfg.Provider,
-		Source:    h.catalogSource,
-		FetchedAt: h.catalogFetchedAt,
-		Models:    h.catalog,
-	})
+	h.setCatalogLocked(h.catalog)
 }
 
 // sessionInfo builds the immutable TUI header for a store and its reconstructed
@@ -138,7 +129,7 @@ func (h *tuiHost) NewSession(opts tui.RunOptions) (tui.SessionSnapshot, error) {
 	cfg := h.cfg
 	cfg.ResumeID = ""
 	cfg.ForkID = ""
-	store, err := session.Create(cfg.StateDir, session.NewID())
+	store, err := session.CreateNew(cfg.StateDir)
 	if err != nil {
 		return tui.SessionSnapshot{}, fmt.Errorf("create session log: %w", err)
 	}
@@ -248,72 +239,29 @@ func (h *tuiHost) ResumeSession(id string) (tui.SessionSnapshot, error) {
 	}, nil
 }
 
-// sessionCandidate is one session log considered for the resume picker.
-type sessionCandidate struct {
-	id       string
-	path     string
-	modified time.Time
-}
-
-// listPreviousSessions scans the state directory's session logs and keeps those
-// recorded for workspace. Logs that are unreadable, corrupt, linked, or from
-// another workspace are skipped; the active session is always excluded.
+// listPreviousSessions lists the sessions recorded for workspace. The SDK owns
+// the storage layout, the head read, the newest-first order, and the cap; the
+// active session and delegated children are filtered here.
 func listPreviousSessions(stateDir, workspace, current string) ([]tui.PreviousSession, error) {
-	dir := filepath.Join(stateDir, "sessions")
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("list sessions in %s: %w", dir, err)
-	}
-	candidates := make([]sessionCandidate, 0, len(entries))
-	for _, entry := range entries {
-		id, ok := strings.CutSuffix(entry.Name(), ".jsonl")
-		if !ok {
-			continue
-		}
-		canonical, err := session.CanonicalID(id)
-		if err != nil || canonical != id || id == current {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		candidates = append(candidates, sessionCandidate{
-			id:       id,
-			path:     filepath.Join(dir, entry.Name()),
-			modified: info.ModTime(),
-		})
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if !candidates[i].modified.Equal(candidates[j].modified) {
-			return candidates[i].modified.After(candidates[j].modified)
-		}
-		return candidates[i].id > candidates[j].id
+	summaries, err := engine.ListSummaries(context.Background(), stateDir, engine.ListOptions{
+		Workspace: workspace,
+		Limit:     maxPreviousSessions + 1,
+		MaxEvents: sessionHeadEvents,
 	})
-	choices := make([]tui.PreviousSession, 0, min(len(candidates), maxPreviousSessions))
-	for _, candidate := range candidates {
+	if err != nil {
+		return nil, err
+	}
+	choices := make([]tui.PreviousSession, 0, min(len(summaries), maxPreviousSessions))
+	for _, summary := range summaries {
 		if len(choices) >= maxPreviousSessions {
 			break
 		}
-		events, err := session.ReadHead(candidate.path, sessionHeadEvents)
-		if err != nil {
-			continue
-		}
-		summary, err := agent.Summarize(events)
-		if err != nil || summary.Workspace != workspace {
-			continue
-		}
-		if summary.ParentSession != "" {
-			// A delegated child is addressable by ID and by -resume, but it is
-			// not a previous session a human started.
+		if summary.ID == current {
 			continue
 		}
 		choices = append(choices, tui.PreviousSession{
-			ID:       candidate.id,
-			Modified: candidate.modified,
+			ID:       summary.ID,
+			Modified: summary.UpdatedAt,
 			Model:    tui.SanitizeLine(summary.Model),
 			Summary:  sessionPreview(summary.FirstMessage),
 		})

@@ -126,7 +126,7 @@ type Host interface {
 	Info() Info
 	Models() []ModelChoice
 	History() ([]agent.HistoryItem, error)
-	Start(sub Submission, opts RunOptions, steer <-chan string, display func(agent.DisplayEvent) error) (Run, error)
+	Start(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (Run, error)
 	Close() error
 }
 
@@ -301,7 +301,7 @@ type SettingsEditor interface {
 // could not be queued; SubagentHistory reads that child's display transcript.
 // Both are keyed by the child session ID announced in SubagentStarted.
 type SubagentFocus interface {
-	SteerSubagent(sessionID, text string) error
+	SteerSubagent(sessionID string, line agent.SteeringLine) error
 	SubagentHistory(sessionID string) ([]agent.HistoryItem, error)
 }
 
@@ -1022,7 +1022,7 @@ func (m *App) startRun(text, source string) tea.Cmd {
 	m.historyIndex = len(m.inputHistory)
 
 	events := make(chan agent.DisplayEvent, 256)
-	steer := make(chan string, 64)
+	steer := make(chan agent.SteeringLine, 64)
 	stop := make(chan struct{})
 	display := func(ev agent.DisplayEvent) error {
 		select {
@@ -1178,11 +1178,10 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		}))
 	case agent.ResponseCompleted:
 		m.run.state = StateRunning
-		m.run.turns++
-		// A response that reported no usage keeps the last known occupancy.
-		if total := ev.Usage.Total(); total > 0 {
-			m.run.contextTokens = total
-		}
+		// The event carries the same cumulative figures the session state and
+		// result expose, so the live header cannot drift from the terminal one.
+		m.run.turns = ev.CumulativeTurns
+		m.run.contextTokens = ev.ContextTokens
 		m.dirty = true
 		text := CapText(Sanitize(ev.Text), maxTranscriptItemText)
 		streamed := m.run.streamed
@@ -1279,7 +1278,7 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		m.dirty = true
 		it.running = false
 		it.ok = ev.OK
-		it.code = string(ev.Code)
+		it.code = ev.Code
 		it.output = CapText(Sanitize(ev.Output), maxTranscriptItemText)
 		it.errText = CapText(Sanitize(ev.Error), maxTranscriptItemText)
 		it.exitCode = ev.ExitCode
@@ -1292,7 +1291,7 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 				m.setTodos(items)
 			}
 		}
-		if ev.Name == "delegate" {
+		if ev.Name == tools.NameDelegate {
 			if details, ok := tools.ParseDelegateDetails(ev.Details); ok {
 				it.delegate = &details
 			}
@@ -1305,7 +1304,7 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 			CallID:        it.callID,
 			Name:          it.name,
 			OK:            it.ok,
-			Code:          it.code,
+			Code:          string(it.code),
 			ExitCode:      it.exitCode,
 			Truncated:     it.truncated,
 			TimedOut:      it.timedOut,
@@ -1326,6 +1325,12 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		}
 		m.refreshChildFocus(ev.Session)
 		m.ensureContent()
+	case agent.SubagentMessageRecorded:
+		if f := m.childFocus; f != nil && f.session == ev.Session {
+			f.ackPending(ev.ID)
+			m.rebuildChildFocus()
+			m.ensureContent()
+		}
 	case agent.MessageRecorded:
 		m.ackMessage(ev)
 	case agent.Notice:
@@ -1337,7 +1342,7 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		m.dirty = true
 		m.ensureContent()
 	case agent.RunFinished:
-		m.applyResult(ev.Result, ev.Reason, ev.Duration, true)
+		m.applyResult(ev.Result)
 		return nil
 	}
 	return m.waitDisplayCmd()
@@ -1373,7 +1378,7 @@ func (m *App) completeRun() tea.Cmd {
 	m.run.closed = true
 	m.run.readPending = false
 	if !m.run.finished && m.run.doneResult != nil {
-		m.applyResult(*m.run.doneResult, "", 0, false)
+		m.applyResult(*m.run.doneResult)
 	}
 	m.run.active = false
 	m.run.handle = nil
@@ -1390,19 +1395,15 @@ func (m *App) finishQuit() tea.Cmd {
 
 // applyResult records a terminal run status once and updates the session
 // counters shown in the header.
-func (m *App) applyResult(result agent.Result, reason string, duration time.Duration, fromDisplay bool) {
-	_ = fromDisplay
+func (m *App) applyResult(result agent.Result) {
 	if m.run.finished {
 		return
 	}
 	status := result.Status
-	if status == "" {
-		status = agent.StopInternalError
-	}
 	if header := m.runItem(); header != nil {
 		header.status = status
-		header.reason = SanitizeLine(reason)
-		header.duration = duration
+		header.reason = SanitizeLine(result.Reason)
+		header.duration = result.Duration
 		header.turns = result.RunTurns
 		header.usage = result.RunUsage
 		header.invalidateLines()
@@ -1467,7 +1468,7 @@ func (m *App) applyResult(result agent.Result, reason string, duration time.Dura
 		}
 		m.emit(EventRunFinished{
 			Status:          status,
-			Reason:          SanitizeLine(reason),
+			Reason:          SanitizeLine(result.Reason),
 			RunTurns:        result.RunTurns,
 			RunUsage:        result.RunUsage,
 			RunCostMicroUSD: runCost,
@@ -1492,17 +1493,18 @@ func (m *App) ackMessage(ev agent.MessageRecorded) {
 	switch ev.Source {
 	case "steer":
 		for i := range m.steer {
-			if !m.steer[i].acked && m.steer[i].text == text {
-				m.steer[i].acked = true
-				if m.steer[i].item != nil {
-					m.steer[i].item.queued = false
-					m.steer[i].item.acked = true
-					m.steer[i].item.invalidateLines()
-					m.dirty = true
-				}
-				m.notice = "steering sent"
-				return
+			if m.steer[i].acked || (ev.ID != 0 && m.steer[i].id != ev.ID) {
+				continue
 			}
+			m.steer[i].acked = true
+			if m.steer[i].item != nil {
+				m.steer[i].item.queued = false
+				m.steer[i].item.acked = true
+				m.steer[i].item.invalidateLines()
+				m.dirty = true
+			}
+			m.notice = "steering sent"
+			return
 		}
 		m.addItem(&transcriptItem{kind: itemUser, run: m.run.number, source: "steer", text: text, acked: true})
 		m.dirty = true

@@ -119,13 +119,13 @@ func (h *tuiHost) applyConfigSetting(file *fileConfig, key, value string) error 
 		if strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl) {
 			return errors.New("model must not contain whitespace or control characters")
 		}
-		if len(h.catalog) > 0 && value != h.cfg.Model {
-			m, ok := h.catalog[value]
+		if len(h.catalog.Models) > 0 && value != h.cfg.Model {
+			m, ok := h.catalog.Models[value]
 			if !ok {
 				return fmt.Errorf("model %q is not in the loaded catalog", value)
 			}
-			if m.Unavailable != "" {
-				return fmt.Errorf("model %q is not usable: %s", value, m.Unavailable)
+			if err := m.Validate(); err != nil {
+				return fmt.Errorf("model %q: %w", value, err)
 			}
 		}
 		file.Model = &value
@@ -162,7 +162,7 @@ func (h *tuiHost) applyConfigSetting(file *fileConfig, key, value string) error 
 			file.ModelsDevURL = nil
 			return nil
 		}
-		if _, err := model.NewModelsDevSource(model.CatalogOptions{URL: value, StateDir: h.cfg.StateDir}); err != nil {
+		if err := model.ValidateCatalogURL(value); err != nil {
 			return err
 		}
 		file.ModelsDevURL = &value
@@ -232,7 +232,7 @@ func (h *tuiHost) applyConfigSetting(file *fileConfig, key, value string) error 
 		if file.Model != nil {
 			modelID = *file.Model
 		}
-		if m, ok := h.catalog[modelID]; ok {
+		if m, ok := h.catalog.Models[modelID]; ok {
 			if err := validateModelThinkingEffort(value, m); err != nil {
 				return err
 			}

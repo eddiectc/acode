@@ -116,8 +116,8 @@ func runCatalogAction(cfg config, stdout, stderr io.Writer) int {
 	}
 	if cfg.ListModels {
 		for _, m := range cat.SortedModels() {
-			if m.Unavailable != "" {
-				warnf(stderr, "model %s is not usable: %s", m.ID, m.Unavailable)
+			if err := m.Validate(); err != nil {
+				warnf(stderr, "model %s: %v", m.ID, err)
 			}
 		}
 		writeCatalogList(stdout, usable)
@@ -242,10 +242,10 @@ func clearInheritedThinkingEffort(cfg *config, m model.CatalogModel, warn func(s
 func usableCatalogModel(cat model.Catalog, id string) (model.CatalogModel, error) {
 	m, err := cat.Lookup(id)
 	if err != nil {
-		return model.CatalogModel{}, fmt.Errorf("%w: %q for provider %s", model.ErrModelNotFound, id, cat.Provider)
+		return model.CatalogModel{}, err
 	}
-	if m.Unavailable != "" {
-		return model.CatalogModel{}, fmt.Errorf("model %q is not usable: %s", id, catalogField(m.Unavailable, 512))
+	if err := m.Validate(); err != nil {
+		return model.CatalogModel{}, err
 	}
 	return m, nil
 }
@@ -254,11 +254,8 @@ func usableCatalogModel(cat model.Catalog, id string) (model.CatalogModel, error
 // configuration. An explicit context flag is clamped to the model window and
 // remains the value used when the TUI switches models again.
 func applyCatalogModel(cfg *config, m model.CatalogModel, warn func(string)) error {
-	if m.Dialect != model.DialectChat && m.Dialect != model.DialectResponses {
-		return fmt.Errorf("model %q has unsupported dialect %q", m.ID, m.Dialect)
-	}
-	if m.BaseURL == "" {
-		return fmt.Errorf("model %q has no provider base URL", m.ID)
+	if err := model.ValidateBaseURL(m.BaseURL); err != nil {
+		return fmt.Errorf("model %q has no usable provider base URL: %w", m.ID, err)
 	}
 	cfg.Model = m.ID
 	cfg.Dialect = m.Dialect

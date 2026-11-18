@@ -154,11 +154,12 @@ func (m *App) newImageBlock(alt, path string) *imageBlock {
 		block.errText = "no workspace"
 		return block
 	}
-	if !filepathLocal(path) {
+	rel, ok := ws.LocalDisplayPath(path)
+	if !ok {
 		block.errText = "image path is not a workspace-relative file"
 		return block
 	}
-	data, err := ws.ReadDisplayFile(path, maxImageBytes)
+	data, err := ws.ReadDisplayFile(rel, maxImageBytes)
 	if err != nil {
 		block.errText = SanitizeLine(err.Error())
 		return block
@@ -175,18 +176,6 @@ func (m *App) newImageBlock(alt, path string) *imageBlock {
 	}
 	block.width, block.height = cfg.Width, cfg.Height
 	return block
-}
-
-func filepathLocal(path string) bool {
-	if path == "" || strings.Contains(path, "://") || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
-		return false
-	}
-	for part := range strings.SplitSeq(strings.ReplaceAll(path, "\\", "/"), "/") {
-		if part == ".." || part == ".git" {
-			return false
-		}
-	}
-	return true
 }
 
 // renderImage renders one image item and records its thumbnail rectangle.

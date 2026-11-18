@@ -371,6 +371,11 @@ func TestBinaryRunsBothDialects(t *testing.T) {
 			if rs.Limits.MaxOutputTokens != 0 {
 				t.Errorf("run_start output = %d, want 0 (no harness cap)", rs.Limits.MaxOutputTokens)
 			}
+			// A fresh session starts from zero; the runner derives this from the
+			// log, so the host must not pass its own value.
+			if rs.ResumedFromSeq != 0 {
+				t.Errorf("run_start resumed_from_seq = %d, want 0 for a fresh session", rs.ResumedFromSeq)
+			}
 			f.mu.Lock()
 			bodies := append([][]byte(nil), f.bodies...)
 			f.mu.Unlock()

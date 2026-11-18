@@ -37,13 +37,14 @@ type manualHost struct {
 
 type steerCall struct {
 	session string
+	id      uint64
 	text    string
 }
 
 type startCall struct {
 	sub     Submission
 	opts    RunOptions
-	steer   <-chan string
+	steer   <-chan agent.SteeringLine
 	display func(agent.DisplayEvent) error
 }
 
@@ -64,13 +65,13 @@ func (h *manualHost) TodoItems() []tools.TodoItem           { return cloneTodoIt
 func (h *manualHost) Close() error                          { return nil }
 func (h *manualHost) Workspace() *tools.Workspace           { return h.ws }
 
-func (h *manualHost) SteerSubagent(sessionID, text string) error {
+func (h *manualHost) SteerSubagent(sessionID string, line agent.SteeringLine) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.steerErr != nil {
 		return h.steerErr
 	}
-	h.steered = append(h.steered, steerCall{session: sessionID, text: text})
+	h.steered = append(h.steered, steerCall{session: sessionID, id: line.ID, text: line.Text})
 	return nil
 }
 
@@ -83,7 +84,7 @@ func (h *manualHost) SubagentHistory(sessionID string) ([]agent.HistoryItem, err
 	return append([]agent.HistoryItem(nil), h.childHistory[sessionID]...), nil
 }
 
-func (h *manualHost) Start(sub Submission, opts RunOptions, steer <-chan string, display func(agent.DisplayEvent) error) (Run, error) {
+func (h *manualHost) Start(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (Run, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.startErr != nil {
@@ -568,13 +569,13 @@ func TestSteeringAckAndRequeue(t *testing.T) {
 	run, call := startTestRun(t, app, "first")
 	typeText(t, app, "keep going")
 	press(t, app, "enter")
-	if got := <-call.steer; got != "keep going" {
-		t.Fatalf("steer = %q", got)
+	if got := <-call.steer; got.Text != "keep going" || got.ID == 0 {
+		t.Fatalf("steer = %+v", got)
 	}
 	if !app.steer[0].item.queued {
 		t.Fatal("steering item not marked queued")
 	}
-	deliver(app, agent.MessageRecorded{Source: "steer", Text: "keep going"})
+	deliver(app, agent.MessageRecorded{ID: app.steer[0].id, Source: "steer", Text: "keep going"})
 	if app.steer[0].item.queued || !app.steer[0].acked {
 		t.Fatalf("steering not acknowledged: %+v", app.steer[0])
 	}

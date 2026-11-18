@@ -20,6 +20,13 @@ const (
 	childErrBytes      = 512
 )
 
+// pendingSteer is one composer line sent to a focused child that the child has
+// not acknowledged yet. The host assigns the ID the SDK echoes back.
+type pendingSteer struct {
+	id   uint64
+	text string
+}
+
 // childFocus is one delegated child's read-only transcript, opened by Enter on
 // an /agent-hub row. While the child is running the composer steers it; a
 // finished child leaves the view read-only until Esc returns to the parent.
@@ -29,21 +36,19 @@ type childFocus struct {
 	status   string
 	readOnly bool
 	items    []agent.HistoryItem
-	// pending holds composer lines sent to the child that have not appeared in
-	// its log yet. They render as queued and are dropped once the child records
-	// them with source=subagent-steer.
-	pending []string
+	// pending holds composer lines sent to the child that have not been
+	// acknowledged yet. They render as queued and are dropped by ID when the
+	// child records them with source=subagent-steer.
+	pending []pendingSteer
 	err     string
 	view    transcriptView
 	follow  bool
 	width   int
 }
 
-// setItems installs a fresh child history snapshot and reconciles pending
-// steering lines with what the child has recorded.
+// setItems installs a fresh child history snapshot.
 func (f *childFocus) setItems(items []agent.HistoryItem) {
 	f.items = items
-	f.dropAckedPending()
 	for i := len(items) - 1; i >= 0; i-- {
 		if items[i].Kind != agent.HistoryRun {
 			continue
@@ -60,32 +65,25 @@ func (f *childFocus) setItems(items []agent.HistoryItem) {
 }
 
 // addPending records a steering line already accepted by the host.
-func (f *childFocus) addPending(text string) {
-	f.pending = append(f.pending, text)
+func (f *childFocus) addPending(id uint64, text string) {
+	f.pending = append(f.pending, pendingSteer{id: id, text: text})
 	if len(f.pending) > childPendingSteers {
 		f.pending = f.pending[len(f.pending)-childPendingSteers:]
 	}
 }
 
-// dropAckedPending removes lines the child log now carries. The child records
-// them at its next turn boundary, so a line stays queued while a model call is
-// in flight.
-func (f *childFocus) dropAckedPending() {
+// ackPending drops the line the child acknowledged. Matching by ID keeps two
+// identical submissions distinct.
+func (f *childFocus) ackPending(id uint64) {
 	if len(f.pending) == 0 {
 		return
 	}
 	kept := f.pending[:0]
-	for _, text := range f.pending {
-		acked := false
-		for _, item := range f.items {
-			if item.Kind == agent.HistoryUser && item.Source == agent.SourceSubagentSteer && item.Text == text {
-				acked = true
-				break
-			}
+	for _, entry := range f.pending {
+		if id != 0 && entry.id == id {
+			continue
 		}
-		if !acked {
-			kept = append(kept, text)
-		}
+		kept = append(kept, entry)
 	}
 	f.pending = kept
 }
@@ -110,7 +108,7 @@ func (f *childFocus) rebuild(t uiTheme, width int, rich, noColor bool) {
 // renderChildHistory renders one delegated child's display history. Assistant
 // text is markdown source and follows the parent transcript's rich/raw mode;
 // tool bodies are capped because the focused view is not the log.
-func renderChildHistory(t uiTheme, items []agent.HistoryItem, pending []string, width int, rich, noColor bool) []string {
+func renderChildHistory(t uiTheme, items []agent.HistoryItem, pending []pendingSteer, width int, rich, noColor bool) []string {
 	var lines []string
 	for _, item := range items {
 		switch item.Kind {
@@ -127,11 +125,15 @@ func renderChildHistory(t uiTheme, items []agent.HistoryItem, pending []string, 
 		case agent.HistoryTool:
 			lines = append(lines, renderChildTool(t, item, width)...)
 		case agent.HistoryNotice:
-			lines = append(lines, renderTextBlock(t, "notice", t.notice, item.Text, width)...)
+			style := t.notice
+			if item.NoticeKind.Failure() {
+				style = t.errorSty
+			}
+			lines = append(lines, renderTextBlock(t, "notice", style, item.Text, width)...)
 		}
 	}
-	for _, text := range pending {
-		lines = append(lines, renderTextBlock(t, "delegation steer", t.user, text, width)...)
+	for _, entry := range pending {
+		lines = append(lines, renderTextBlock(t, "delegation steer", t.user, entry.text, width)...)
 		lines = append(lines, t.dim.Render("  queued…"))
 	}
 	if len(lines) == 0 {
@@ -336,12 +338,14 @@ func (m *App) submitChildSteering(text string) tea.Cmd {
 		m.restoreComposer(text)
 		return nil
 	}
-	if err := provider.SteerSubagent(f.session, text); err != nil {
+	m.steerNextID++
+	line := agent.SteeringLine{ID: m.steerNextID, Text: text}
+	if err := provider.SteerSubagent(f.session, line); err != nil {
 		m.notice = "child steering: " + CapText(SanitizeLine(err.Error()), childErrBytes)
 		m.restoreComposer(text)
 		return nil
 	}
-	f.addPending(text)
+	f.addPending(line.ID, text)
 	m.rebuildChildFocus()
 	m.notice = "steering queued for " + SanitizeLine(f.agent)
 	return nil

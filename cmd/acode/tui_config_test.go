@@ -202,7 +202,7 @@ func TestTUISelectModelReportsContextClamp(t *testing.T) {
 			maxContextSet:    true,
 			maxContextValue:  500_000,
 		},
-		catalog: map[string]model.CatalogModel{
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
 			"small": {
 				ID:            "small",
 				Dialect:       model.DialectChat,
@@ -210,7 +210,7 @@ func TestTUISelectModelReportsContextClamp(t *testing.T) {
 				ContextWindow: 262_144,
 				ToolCall:      true,
 			},
-		},
+		}},
 	}
 	if _, err := host.SelectModel("small"); err != nil {
 		t.Fatalf("SelectModel: %v", err)

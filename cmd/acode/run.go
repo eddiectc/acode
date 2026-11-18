@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/term"
@@ -245,6 +246,7 @@ func batchEngineSpec(cfg config, mode engine.Mode, sessionID string, logger *slo
 		ThinkingEffort: &effort,
 		Agents:         cfg.Agents,
 		Agent:          cfg.Agent,
+		UserAgent:      acodeUserAgent(cfg.HarnessVersion),
 		ToolOptions:    toolOptions(cfg, "", ""),
 		PromptVersion:  cfg.PromptVersion,
 		ToolsetVersion: cfg.ToolsetVersion,
@@ -261,17 +263,12 @@ func batchEngineSpec(cfg config, mode engine.Mode, sessionID string, logger *slo
 		},
 	}
 	switch mode {
-	case engine.ModeResume:
-		spec.ExecutionGrant = batchTools(cfg)
-		spec.ExecutionGrantSet = true
 	case engine.ModeNew, engine.ModeFork:
 		spec.Grant = batchTools(cfg)
 		spec.GrantSet = true
 		if mode == engine.ModeNew {
 			spec.CustomToolsSet = true
 		}
-		spec.ExecutionGrant = spec.Grant
-		spec.ExecutionGrantSet = true
 	}
 	return spec
 }
@@ -317,15 +314,10 @@ func executeEngineRun(cfg config, host *engine.Host, stdin io.Reader, stdout, st
 		_ = host.Close()
 		return engineExitCode(err)
 	}
-	resumedFrom := host.Store().LastSeq()
-	if cfg.ResumeID == "" && cfg.ForkID == "" {
-		resumedFrom = 0
-	}
 	result, runErr := runner.Run(runCtx, agent.RunOptions{
-		Task:           cfg.Task,
-		TaskSet:        cfg.TaskSet,
-		TaskFrom:       cfg.TaskSource,
-		ResumedFromSeq: resumedFrom,
+		Task:     cfg.Task,
+		TaskSet:  cfg.TaskSet,
+		TaskFrom: cfg.TaskSource,
 	})
 	var sinkErr error
 	if sink != nil {
@@ -334,9 +326,6 @@ func executeEngineRun(cfg config, host *engine.Host, stdin io.Reader, stdout, st
 	closeErr := host.Close()
 
 	status := result.Status
-	if status == "" {
-		status = agent.StopInternalError
-	}
 	if runErr != nil {
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(runErr.Error()))
 		if cfg.Token == "" && authFailureHint(runErr) {
@@ -447,20 +436,9 @@ func batchTools(cfg config) []string {
 	// The batch grant is computed from the recorded version, not the current
 	// one: a resumed or forked old session keeps its frozen schema set, so a
 	// current-only name must not appear in the grant.
-	version := cfg.ToolsetVersion
-	if version == "" {
-		version = tools.Version
-	}
-	schemas, err := tools.SchemasFor(version)
+	names, err := tools.NamesFor(toolsetVersionOf(cfg), tools.NameDelegate)
 	if err != nil {
 		return nil
-	}
-	names := make([]string, 0, len(schemas))
-	for _, schema := range schemas {
-		if schema.Name == "delegate" {
-			continue
-		}
-		names = append(names, schema.Name)
 	}
 	return names
 }
@@ -473,24 +451,25 @@ func sessionGrant(recordedTools []string, toolsetVersion string) []string {
 	if recordedTools != nil {
 		return cloneStrings(recordedTools)
 	}
-	version := toolsetVersion
-	if version == "" {
-		version = tools.Version
-	}
-	schemas, err := tools.SchemasFor(version)
+	names, err := tools.NamesFor(toolsetVersion)
 	if err != nil {
 		return nil
 	}
-	names := make([]string, 0, len(schemas))
-	for _, schema := range schemas {
-		if schema.Name == "delegate" {
-			// The recorded version declares delegate, so the session is not
-			// narrowed at dispatch.
-			return nil
-		}
-		names = append(names, schema.Name)
+	if slices.Contains(names, tools.NameDelegate) {
+		// The recorded version declares delegate, so the session is not
+		// narrowed at dispatch.
+		return nil
 	}
 	return names
+}
+
+// toolsetVersionOf resolves the recorded toolset version, defaulting to the
+// current one.
+func toolsetVersionOf(cfg config) string {
+	if cfg.ToolsetVersion != "" {
+		return cfg.ToolsetVersion
+	}
+	return tools.Version
 }
 
 // openWorkspace opens the configured workspace for a new session.
@@ -542,11 +521,9 @@ func sessionFailure(err error, stderr io.Writer) int {
 func newCompleterFor(dialect model.Dialect, cfg config, sessionID string) model.Completer {
 	userAgent := acodeUserAgent(cfg.HarnessVersion)
 	if dialect == model.DialectResponses {
-		return model.NewOpenAIResponses(cfg.BaseURL, cfg.Token, sessionID, cfg.HarnessVersion, cfg.HTTPTimeout).
-			WithUserAgent(userAgent)
+		return model.NewOpenAIResponses(cfg.BaseURL, cfg.Token, sessionID, userAgent, cfg.HTTPTimeout)
 	}
-	return model.NewOpenAIChat(cfg.BaseURL, cfg.Token, sessionID, cfg.HarnessVersion, cfg.HTTPTimeout).
-		WithUserAgent(userAgent)
+	return model.NewOpenAIChat(cfg.BaseURL, cfg.Token, sessionID, userAgent, cfg.HTTPTimeout)
 }
 
 // acodeUserAgent identifies this coding agent to provider and catalog
@@ -576,11 +553,10 @@ func configState(path string) string {
 	return path
 }
 
-// authFailureHint reports whether err is a provider 401, which is actionable
-// as a missing or invalid ACODE_PROVIDER_TOKEN.
+// authFailureHint reports whether err is a provider authentication failure,
+// which is actionable as a missing or invalid ACODE_PROVIDER_TOKEN.
 func authFailureHint(err error) bool {
-	var httpErr *model.HTTPError
-	return errors.As(err, &httpErr) && httpErr.StatusCode == 401
+	return errors.Is(err, model.ErrAuth)
 }
 
 // prepareStateDir creates the state directory with mode 0700 and verifies that
@@ -717,11 +693,4 @@ func restoreOwnerAccess(dir string) error {
 		}
 	}
 	return nil
-}
-
-func lastSeq(events []session.Event) uint64 {
-	if len(events) == 0 {
-		return 0
-	}
-	return events[len(events)-1].Seq
 }

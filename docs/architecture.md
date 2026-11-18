@@ -92,8 +92,10 @@ version.
 `ModeResume`, or `ModeFork`, then calls `Host.BuildRunner` with a display
 callback that writes streamed text through `textsink` and tool/notice activity
 through the batch renderer. The runner and the session store are the same ones
-the TUI uses. Batch never grants `delegate`; the execution grant withholds it
-without rewriting the recorded tool contract.
+the TUI uses. A new or forked batch session records a tool grant without
+`delegate`; a resumed session keeps its recorded contract, and batch configures
+no spawner, so `delegate` can only return `unavailable` even when the recorded
+grant offers it.
 
 ### TUI host
 
