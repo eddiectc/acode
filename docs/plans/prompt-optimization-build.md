@@ -19,7 +19,7 @@
 
 ## Decision summary
 
-Two decisions drive everything else:
+Three decisions drive everything else:
 
 1. **acode owns its main-agent system prompt — by composition, not
    transcription.** The identity line is user-visible product surface, so the
@@ -32,11 +32,25 @@ Two decisions drive everything else:
    parent's entire delegation-decision surface is the five description
    strings. Today's `reviewer` description is a capability label with no
    trigger, which is why review was never delegated (§1.2).
+3. **acode ships its own role definitions.** The roster is user-visible
+   product surface — the `/agents` browser, the names the parent routes to,
+   the operator `agent_overrides` keyed by role name — so it follows the
+   identity rule: product content lives with the product, mechanism with the
+   SDK. `DelegationConfig.Agents` is already the host-supplied set ("use
+   DefaultAgents to opt into the bundled set"), so acode opts out of the
+   bundled five rather than asking the SDK to change them. aharness keeps the
+   definition format, parser, caps, catalog, spawner, and overrides, plus the
+   bundled set as defaults for bare library hosts — the identical role text
+   is proposed upstream for that set through the issue doc, so library users
+   get the same routing fix and acode stops depending on it. The one real gap
+   is precedence: `LoadAgents` seeds from the bundled set and applies
+   operator files in one call, with no layer between for a host's own
+   defaults (§4.3 ask 5).
 
 | Phase | Contents | Status |
 |---|---|---|
 | 0 | Zero-code pilot: install the §6 role definitions in `~/.acode/agents/` | Proposed |
-| 1 | Bundled role definitions upstream (five descriptions + bodies) | Proposed |
+| 1 | acode ships its five role definitions, replacing the bundled set; operator files still win | Proposed |
 | 2 | SDK `prompt-v3` shared body + the three ownership exports | Proposed |
 | 3 | acode composes its prompt through `Config.SystemPrompt` | Proposed |
 
@@ -266,6 +280,17 @@ ownership.
    forked with instructions alone resurrects "You are aharness". acode
    avoids the path by always re-supplying; the SDK could instead append to
    the recorded prompt.
+5. **A host-defaults layer in agent discovery.** `LoadAgents` seeds from
+   the bundled set and then applies `<state-dir>/agents/*.md`, with no
+   point between for a host's own defaults, so a first-party host cannot
+   ship definitions without overriding operator customization. Ask for one
+   of: a seeded discovery variant (`LoadAgentsWith(base, stateDir)`), an
+   exported merge helper over `[]AgentDefinition`, or exported source
+   constants (`SourceBundled`/`SourceUser`) so a host can replace only
+   bundled-sourced entries and leave operator files untouched. Interim,
+   using the recorded `Source` string: acode replaces only entries whose
+   `Source == "bundled"`, which preserves operator precedence because
+   replacement cannot grow the set past `maxAgents`.
 
 ### 4.4 The SDK `prompt-v3` shared body (upstream; acode inherits via the export)
 
@@ -331,8 +356,13 @@ no second version bump is needed).
 ## 6. Role definitions
 
 Each entry: the new `Description` (byte count against the 200-byte cap) and
-the new role `Prompt`. Bundled-default changes in `agents.go`; per §2 fact 2,
-no prompt version is required — verify the replay contract first.
+the new role `Prompt`. **These ship in acode** — embedded definition files
+parsed with the SDK's own `agent.ParseAgentDefinition`, replacing the
+bundled-sourced entries of the `LoadAgents` catalog so operator files keep
+winning. The SDK keeps the format, the caps, the catalog, the spawner, and a
+bundled default set for library hosts, which receives the identical text
+through the issue doc; acode stops depending on it. Per §2 fact 2, no prompt
+version is required — verify the replay contract first.
 
 ### explore
 
@@ -486,8 +516,9 @@ which also covers its research-flavored uses.
 | Task | Change | Acceptance |
 |---|---|---|
 | P0.1 | Install the five §6 definitions in `~/.acode/agents/*.md` (`name:` matches the bundled name, `tools:` is the comma-separated grant, `---`, then the body). | The definitions browser shows the replaced set with no warnings; the bundled set returns when the files are removed. |
-| P0.2 | Probe the pilot per §13; if it holds, file the Phase 1 change with the pilot as evidence. | The §13 probe list runs on this machine; results recorded in this plan's verification note. |
-| P1.1 | Upstream: swap the five `Description`/`Prompt` strings in `bundledAgents()`; pin the new `reviewer` description text in `agents_test.go` (the bundled set has no text pins today). | All five descriptions ≤200 bytes (193/191/178/189/145); SDK tests green; a session opened before the change replays its recorded child prompts unchanged. |
+| P0.2 | Probe the pilot per §13; if it holds, land Phase 1 with the pilot as evidence. | The §13 probe list runs on this machine; results recorded in this plan's verification note. |
+| P1.1 | acode: ship the five §6 definitions as embedded files (`cmd/acode/agents/*.md`, `//go:embed`), parse each with `agent.ParseAgentDefinition`, and merge them over the bundled-sourced entries of the `LoadAgents` catalog (`tui.go:758`) before `ApplyAgentOverrides`. Needs §4.3 ask 5 for the clean precedence hook, or the `Source`-string interim. Pin the five descriptions in an acode test. | The catalog passed to `agent.NewSpawner` carries the five new descriptions, all ≤200 bytes (193/191/178/189/145); an operator file replacing `reviewer` still wins over the app defaults; the definitions browser shows the app set with no warnings; a session opened before the change replays its recorded child prompts unchanged. |
+| P1.2 | Upstream, decoupled from P1.1: update the bundled defaults with the identical text (the issue doc's Ask 1) so library hosts and the SDK's own tests get the same routing fix. | SDK `agents_test.go` pins the new bundled text; nothing in acode depends on it. |
 | P2.1 | Upstream: add the v3 shared body per §4.4 as new consts (`harnessRules` is compile-time concatenated into the frozen v0/v1 templates and cannot be edited in place), `PromptVersionV3`, and a `renderPrompt` case; point `childSystemPrompt` at the v3 body for v3 children. | `prompt_test.go` pins v3 in the existing style; v0/v1/v2 still render frozen. |
 | P2.2 | Upstream: the §4.3 exports — `agent.PromptBody`, host identity for `childSystemPrompt`, the caller prompt tag; decide the fork+`Instructions` edge. | A host can compose without transcribing; `acode-prompt-v1`-style tags record alongside the SDK version; children render the host identity. |
 | P3.1 | acode: a prompt builder in `cmd/acode` — acode identity, `agent.PromptBody`, then the §4.5 policy block — through the existing `SystemPrompt` plumbing (`cmd/acode/config.go:123`, `run.go:410`). Fork re-supplies it; resume replays the recorded text. | New/fork parents record the acode prompt; resume is byte-identical to before; fork keeps acode identity even when instructions are set. |
@@ -495,9 +526,10 @@ which also covers its research-flavored uses.
 | P3.3 | Bump the SDK pin; run the full DoD set; record verification (§13). | `make dod` green; probes recorded as pending where credentials are unavailable. |
 
 Ordering rationale: Phase 0 costs nothing and de-risks Phase 1; Phase 1 is
-the smallest upstream change with the largest expected effect (the routing
-fix); Phase 2's exports unblock Phase 3; nothing lands app-side before the
-export exists, so there is never a transcribed copy in between.
+app-side, so the routing fix — the change with the largest expected effect —
+no longer waits on an SDK release; Phase 2's exports unblock Phase 3; nothing
+lands app-side before the export exists, so there is never a transcribed copy
+in between.
 
 ## 9. Intended behavior changes
 
@@ -511,7 +543,8 @@ export exists, so there is never a transcribed copy in between.
    verified by probe, not by test.
 5. **Session records carry a caller prompt tag** beside the SDK prompt
    version, so a trajectory is attributable to the acode prompt version.
-6. **The agent catalog lines change** (the five descriptions).
+6. **The agent catalog lines change** (the five descriptions), shipped in
+   acode's own definitions rather than the SDK's bundled set.
 
 No CLI flag, environment variable, config key, slash command, or exit code
 changes. `-ui-json` and the transcript change only where the identity line
@@ -526,9 +559,10 @@ and prompt tag appear. The `session_start` record gains one `extra` field
 | DEC2 | Where does delegation guidance live? | Mechanics (self-containment) upstream in the SDK body; policy (which role, when, review-before-done) in acode's block. If a second host ever wants the policy, it migrates upstream and acode shrinks back to identity alone. |
 | DEC3 | Transcribe the contract lines to avoid an SDK dependency? | Never (§7): a transcribed invariant drifts the first time the SDK adds one. Block Phase 3 on the `PromptBody` export. |
 | DEC4 | Role text without a prompt version bump? | Rely on sessions recording resolved text (§2 fact 2), but verify the replay contract first; if it does not hold, ship the role changes with `prompt-v3`. |
-| DEC5 | Pilot before filing upstream? | Yes: Phase 0 is reversible and turns the Phase 1 ask into an evidence-backed request. Invalid pilot files are skipped silently — check the definitions browser after installing. |
+| DEC5 | Pilot before landing Phase 1? | Yes: Phase 0 is reversible and turns the app-side change into an evidence-backed one. Invalid pilot files are skipped silently — check the definitions browser after installing. |
 | DEC6 | Project-instructions read for read-only roles too? | Open, decided by probe (§5). Default: keep it in the shared body; split to the mutating roles only if the read costs more than it buys. |
 | DEC7 | Widen `reviewer` tools (`run_command` for `git diff`/tests)? | Open. Today the parent must hand it the changed files, which §4.5 already instructs. Widening changes what "read-only review" means in constrained environments; decide with Phase 1, not after. |
+| DEC8 | Who owns the five role definitions? | acode ships them (§6): the roster is product surface — the `/agents` browser, the routing names, the operator `agent_overrides` keyed by name — and the descriptions are routing *policy*, which DEC2 already assigns to the host. aharness keeps the mechanism (format, parser, caps, catalog, spawner, overrides) and the bundled set as library defaults (P1.2). Consistent with DEC1: product content lives with the product. |
 
 ## 11. Risks and mitigations
 
@@ -549,7 +583,7 @@ and prompt tag appear. The `session_start` record gains one `extra` field
 | SDK unit (upstream) | `prompt_test.go` v3 pins; `agents_test.go` description pins and the 200-byte caps; child identity for a v3 child. |
 | acode unit | The prompt builder composes identity + body + policy; `acodePromptVersion` recorded in the session; the composed-text pin. |
 | acode integration | New/fork record the acode prompt; resume replays the recorded text byte-identically; fork with instructions keeps the acode identity; a pre-change session's child prompt is unchanged. |
-| TUI | Definitions browser shows replaced agents and warnings; catalog lines come from the effective definitions. |
+| TUI | Definitions browser shows replaced agents and warnings; catalog lines come from the effective definitions; an operator file replacing `reviewer` still wins over the app defaults (P1.1). |
 | Probes (real model) | §13's four behaviors, 10–12 runs per variant per the SDK evaluation research. |
 | DoD | `make dod` after each phase; real-provider and real-terminal smokes recorded as pending if credentials are unavailable. |
 
