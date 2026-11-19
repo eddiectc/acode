@@ -41,13 +41,7 @@ func runHarnessEnv(t *testing.T, bin, workspace, stateDir, baseURL string, extra
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = workspace
-	env := make([]string, 0, len(os.Environ())+3+len(extraEnv))
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "ACODE_") {
-			continue
-		}
-		env = append(env, entry)
-	}
+	env := testEnvBase()
 	env = append(env, "ACODE_STATE_DIR="+stateDir)
 	if baseURL != "" {
 		env = append(env, "ACODE_PROVIDER_BASE_URL="+baseURL)
@@ -566,7 +560,7 @@ func TestSignalKillsChildAndCleansWorkDir(t *testing.T) {
 		"-max-context-tokens", "200000",
 	)
 	cmd.Dir = workspace
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(testEnvBase(),
 		"ACODE_PROVIDER_BASE_URL="+f.url,
 		"ACODE_PROVIDER_TOKEN=test-token",
 		"ACODE_STATE_DIR="+stateDir,

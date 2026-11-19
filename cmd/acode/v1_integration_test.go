@@ -60,13 +60,7 @@ func integrationEnv(stateDir, baseURL string) []string {
 }
 
 func integrationEnvWith(stateDir, baseURL string, extra []string) []string {
-	env := make([]string, 0, len(os.Environ())+4+len(extra))
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "ACODE_") {
-			continue
-		}
-		env = append(env, entry)
-	}
+	env := testEnvBase()
 	if !envHasKey(extra, "ACODE_STATE_DIR") {
 		env = append(env, "ACODE_STATE_DIR="+stateDir)
 	}

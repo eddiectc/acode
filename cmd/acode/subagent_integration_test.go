@@ -106,13 +106,7 @@ func TestSubagentEndToEnd(t *testing.T) {
 		"-provider-base-url", provider.url,
 		"-max-turns", "5")
 	cmd.Dir = workspace
-	env := make([]string, 0, len(os.Environ())+3)
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "ACODE_") {
-			continue
-		}
-		env = append(env, entry)
-	}
+	env := testEnvBase()
 	env = append(env,
 		"ACODE_STATE_DIR="+stateDir,
 		"ACODE_PROVIDER_TOKEN=test-token",
@@ -331,13 +325,7 @@ func TestSubagentReadOnlyFanOutEndToEnd(t *testing.T) {
 		"-provider-base-url", provider.url,
 		"-max-turns", "5")
 	cmd.Dir = workspace
-	env := make([]string, 0, len(os.Environ())+3)
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "ACODE_") {
-			continue
-		}
-		env = append(env, entry)
-	}
+	env := testEnvBase()
 	env = append(env,
 		"ACODE_STATE_DIR="+stateDir,
 		"ACODE_PROVIDER_TOKEN=test-token",

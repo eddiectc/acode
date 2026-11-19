@@ -68,6 +68,71 @@ func cleanupHarness() {
 	}
 }
 
+// testHomeDir is the default HOME for tests that parse a config in-process.
+// It contains an unreadable ~/.acode/config.json, so a parse that consults the
+// operator's real home fails loudly instead of silently ingesting the
+// operator's settings. The directory is created lazily and once: Go's caches
+// resolve under $HOME, and creating it before the module cache is warm would
+// redirect the first `go build` and force a module re-download.
+//
+// Tests never redirect the process environment itself (see testEnvBase): Go
+// reads GOCACHE and GOMODCACHE from the real env, so a process-wide HOME
+// would move the caches off their warm locations and turn the suite's
+// `go build` into network work this repo forbids.
+var (
+	testHomeOnce sync.Once
+	testHomeDir  string
+)
+
+func testHome() string {
+	testHomeOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "acode-test-home")
+		if err != nil {
+			panic(fmt.Sprintf("test home: %v", err))
+		}
+		configDir := filepath.Join(dir, ".acode")
+		if err := os.MkdirAll(configDir, 0o700); err != nil {
+			panic(fmt.Sprintf("test home config dir: %v", err))
+		}
+		if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(`{"model": "operator",`), 0o600); err != nil {
+			panic(fmt.Sprintf("write test home config: %v", err))
+		}
+		// Mode 000 makes the file unreadable by this user, so any read of the
+		// default implicit config fails even if a future parser tolerates
+		// truncated JSON.
+		if err := os.Chmod(filepath.Join(configDir, "config.json"), 0); err != nil {
+			panic(fmt.Sprintf("chmod test home config: %v", err))
+		}
+		testHomeDir = dir
+	})
+	return testHomeDir
+}
+
+// cleanupTestHome removes the poisoned home. TestMain calls it after the
+// tests, once no config parse can run.
+func cleanupTestHome() {
+	if testHomeDir != "" {
+		_ = os.RemoveAll(testHomeDir)
+	}
+}
+
+// testEnvBase is the single canonical base environment for every harness
+// child process. It copies the operator environment minus every ACODE_
+// variable, then replaces HOME with the poisoned test home, so a child cannot
+// read the operator's real state directory or config, whatever flags it is
+// handed and whatever ACODE_* the operator exported. Every child env is
+// built from this base; no site may pass os.Environ() to a child directly.
+func testEnvBase() []string {
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "ACODE_") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "HOME="+testHome())
+}
+
 // runCLIEnv runs the CLI in-process against an explicit environment. It mirrors
 // runWithIO, so stdout, stderr, and the exit code match a real process without
 // paying process startup. Use it for setup runs whose process boundary is not

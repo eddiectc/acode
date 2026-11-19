@@ -244,6 +244,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	defaultTestModelsDev.Close()
 	cleanupHarness()
+	cleanupTestHome()
 	os.Exit(code)
 }
 
