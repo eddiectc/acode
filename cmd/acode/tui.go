@@ -750,12 +750,19 @@ func openTUIHost(cfg config, stderr io.Writer) (*tuiHost, int) {
 	)
 	warn := func(text string) { startupWarn = append(startupWarn, text) }
 
-	// Definitions are loaded once per process from the state directory. The
-	// recorded prompt and grant keep a resumed session's replay exact, so this
-	// catalog only affects new children and the /agents browser. Operator
-	// overrides are applied to a copy; the declared values stay available for
-	// the browser's provenance view.
-	baseDefinitions := agent.LoadAgents(cfg.StateDir)
+	// Definitions are loaded once per process: acode's five shipped roles as
+	// the base, then the operator's <state-dir>/agents/*.md files, which
+	// replace a shipped role by name. The recorded prompt and grant keep a
+	// resumed session's replay exact, so this catalog only affects new
+	// children and the /agents browser. Operator overrides are applied to a
+	// copy; the declared values stay available for the browser's provenance
+	// view.
+	defaults, defErr := defaultAgentDefinitions()
+	if defErr != nil {
+		_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(defErr.Error()))
+		return nil, exitConfig
+	}
+	baseDefinitions := agent.LoadAgents(defaults, cfg.StateDir)
 	definitions, overrideErr := agent.ApplyAgentOverrides(baseDefinitions, cfg.AgentOverrides)
 	if overrideErr != nil {
 		prefix := "acode: agent overrides: "

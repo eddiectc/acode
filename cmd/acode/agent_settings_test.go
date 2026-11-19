@@ -18,7 +18,7 @@ func settingsCatalog() *agent.AgentCatalog {
 	return &agent.AgentCatalog{
 		Agents: []agent.AgentDefinition{
 			{
-				Name: "explore", Description: "Explore the repository.", Source: "bundled",
+				Name: "explore", Description: "Explore the repository.", Source: "default",
 				Tools: []string{"read_file", "search"}, Prompt: "Explore.\nSecond line.",
 			},
 			{
@@ -122,7 +122,7 @@ func TestTUIHostSavesAgentOverrides(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	base := agent.LoadAgents(dir)
+	base := agent.LoadAgents(testDefaultDefinitions(t), dir)
 	host := &tuiHost{cfg: config{ConfigPath: path}, baseAgents: base}
 
 	if err := host.SetAgentOverride("reviewer", agent.AgentOverride{
@@ -226,7 +226,7 @@ func TestTUIHostRefusesWorkspaceConfig(t *testing.T) {
 	path := filepath.Join(workspace, "config.json")
 	host := &tuiHost{
 		cfg:        config{ConfigPath: path},
-		baseAgents: agent.LoadAgents(t.TempDir()),
+		baseAgents: agent.LoadAgents(testDefaultDefinitions(t), t.TempDir()),
 		ws:         ws,
 	}
 	err = host.SetAgentOverride("reviewer", agent.AgentOverride{Model: settingsStr("m")})
@@ -253,7 +253,7 @@ func TestTUIHostRefusesSymlinkedWorkspaceConfig(t *testing.T) {
 	t.Cleanup(func() { _ = ws.Close() })
 	host := &tuiHost{
 		cfg:        config{ConfigPath: filepath.Join(link, "config.json")},
-		baseAgents: agent.LoadAgents(t.TempDir()),
+		baseAgents: agent.LoadAgents(testDefaultDefinitions(t), t.TempDir()),
 		ws:         ws,
 	}
 	if err := host.SetAgentOverride("reviewer", agent.AgentOverride{Model: settingsStr("m")}); err == nil ||
@@ -269,7 +269,7 @@ func TestTUIHostSaveRejectsBrokenConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"unknown_key": true}`), 0o600); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
-	host := &tuiHost{cfg: config{ConfigPath: path}, baseAgents: agent.LoadAgents(dir)}
+	host := &tuiHost{cfg: config{ConfigPath: path}, baseAgents: agent.LoadAgents(testDefaultDefinitions(t), dir)}
 	err := host.SetAgentOverride("reviewer", agent.AgentOverride{Model: settingsStr("m")})
 	if err == nil || !strings.Contains(err.Error(), "unknown_key") {
 		t.Fatalf("save override = %v, want the broken-file error", err)

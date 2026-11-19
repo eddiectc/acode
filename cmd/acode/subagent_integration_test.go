@@ -175,8 +175,8 @@ func TestSubagentEndToEnd(t *testing.T) {
 	if strings.Join(childStart.Tools, ",") != "read_file,search" {
 		t.Fatalf("child grant = %v", childStart.Tools)
 	}
-	if !strings.Contains(childStart.SystemPrompt, "explore") {
-		t.Fatalf("child prompt = %q", childStart.SystemPrompt)
+	if !strings.Contains(childStart.SystemPrompt, `You are the acode "explore" agent`) {
+		t.Fatalf("child prompt = %q, want the acode identity line", childStart.SystemPrompt)
 	}
 	final := 0
 	for _, ev := range childEvents {
@@ -204,6 +204,21 @@ func TestSubagentEndToEnd(t *testing.T) {
 
 	// The parent records one result and folds the child's accounting.
 	parentEvents := readSessionEvents(t, parentPath)
+	var parentStart struct {
+		SystemPrompt string `json:"system_prompt"`
+	}
+	if err := json.Unmarshal(parentEvents[0].Data, &parentStart); err != nil {
+		t.Fatalf("decode parent session_start: %v", err)
+	}
+	if !strings.Contains(parentStart.SystemPrompt, "You are acode, a coding harness working in the workspace") {
+		t.Fatalf("parent prompt = %q, want the acode identity line", parentStart.SystemPrompt)
+	}
+	if !strings.Contains(parentStart.SystemPrompt, "- reviewer: Independent review of a change its author has read and believes correct.") {
+		t.Fatalf("parent prompt = %q, want the shipped reviewer description in the catalog", parentStart.SystemPrompt)
+	}
+	if !strings.Contains(parentStart.SystemPrompt, "Run the relevant tests before reporting the change done") {
+		t.Fatalf("parent prompt = %q, want the prompt-v3 verify/report rule", parentStart.SystemPrompt)
+	}
 	var (
 		foundResult   bool
 		details       tools.DelegateDetails

@@ -325,8 +325,8 @@ at the parent interrupts as usual. The focused view is not an overlay, so
 
 ### `/agents`
 
-Opens the agent definitions browser: name, source (`bundled` or `user` with the
-file path), effective model and effort (`inherit` when absent, `default` after a
+Opens the agent definitions browser: name, source (`default` for a role
+shipped with acode, `user` with the file path), effective model and effort (`inherit` when absent, `default` after a
 model switch), tool count, `max_turns`, and status (`active`, `disabled`, or
 `invalid`). A `*` marks a value set by an operator override. `Enter` expands a
 row in place to show the tool list, the first prompt line, each setting's
@@ -338,7 +338,7 @@ The four routing settings are editable in place: `m` edits `model`, `e` edits
 removes every override for the row. Empty input clears that override field. The
 editor shows its prompt and any error in a footer; `Enter` saves and `Esc`
 cancels the edit without closing the browser. Rows are sorted by name. An
-invalid file appears as an `invalid` row while the bundled agent of the same
+invalid file appears as an `invalid` row while the shipped agent of the same
 name stays active.
 
 A save rewrites the active config file (`-config`/`ACODE_CONFIG`, default

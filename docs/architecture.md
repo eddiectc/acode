@@ -20,7 +20,7 @@ acode depends on the aharness module and imports its component packages:
 
 | SDK package | acode uses it for |
 |---|---|
-| `aharness/agent` | Runner construction, display events, history, state, agent definitions, spawner, and stop reasons. |
+| `aharness/agent` | Runner construction, display events, history, state, agent definition discovery, spawner, and stop reasons. |
 | `aharness/engine` | New/resume/fork session composition, workspace and work-directory setup, lock-free inspection, and `BuildRunner`. |
 | `aharness/model` | Canonical model types, Chat and Responses adapters, catalog discovery, and pricing. |
 | `aharness/session` | The durable JSONL store, locks, replay, and session IDs. |
@@ -32,6 +32,15 @@ terminal I/O, presentation, exit codes, and all user-facing behavior. There is
 no loop, projection, tool implementation, provider wire format, or session
 schema in this repository. A change to those belongs in aharness and is then
 picked up through the module dependency.
+
+Two pieces of prompt surface are product content and live here, because the SDK
+ships them for no host: the five role definitions in `cmd/acode/agents/` are
+the base that `agent.LoadAgents` seeds and the operator's
+`<state-dir>/agents/*.md` files override by name, and the identity line names
+`acode` for parents and delegated children alike. The prompt body itself — the
+loop invariants, coding policy, coordination guidance, and the agent catalog —
+is the SDK's default (`prompt-v3`) rendered per session, so no prompt text is
+duplicated in this repository.
 
 The module is `github.com/eddiectc/acode`. It depends on the tagged aharness
 release pinned in `go.mod`.
@@ -51,6 +60,8 @@ cmd/acode/
   config_settings.go   # /settings read/write model
   config_settings_write.go # atomic config-file editing
   control.go           # operation controller and batch signal delivery
+  agents.go            # acode identity and the five embedded role definitions
+  agents/*.md          # the shipped roles; operator files override them by name
   models.go            # catalog wiring and list/refresh actions
   sessions.go          # session selection and metadata helpers
   tui.go               # TUI host, session shell, -ui-json wiring, summary

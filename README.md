@@ -130,7 +130,7 @@ separate session under `<state-dir>/sessions`, linked by `parent_session` and
 `parent_call_id`, with its own resolved prompt, tool grant, model, effort,
 provider, usage, and pricing. A child cannot delegate further.
 
-Five agents are built in: `explore`, `researcher`, `reviewer`,
+Five agents ship with acode: `explore`, `researcher`, `reviewer`,
 `implementer`, and `task`. Files in `<state-dir>/agents/*.md` override them by
 exact name; an override uses a strict `key: value` header and a Markdown prompt
 body. A call runs concurrently (up to four) when every task's grant is limited
