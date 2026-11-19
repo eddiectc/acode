@@ -19,7 +19,9 @@
 - **Target:** Go 1.27.4, module `acode`, aharness v0.3.0.
 - **Architecture:** [architecture.md](../architecture.md) defines the SDK
   boundary; the role-definition and identity ownership note landed with the
-  bump. Prompt caps are in [limits.md](../limits.md).
+  bump. Prompt and role-definition caps are SDK-owned, so
+  [limits.md](../limits.md) defers to the aharness limits reference; the
+  shipped definitions are pinned to those caps by test.
 - **Standard:** [coding-standard.md](../coding-standard.md);
   **Definition of done:** [definition-of-done.md](../definition-of-done.md);
   **Testing:** [testing-strategy.md](../testing-strategy.md).
@@ -271,21 +273,33 @@ text.
 
 ### 4.2 Mechanics (verified in the v0.3.0 source)
 
-- **New and Fork only.** Resume inherits the recorded text — correct, since
-  resume replays the session that ran. `Identity` is not recorded; it is
-  re-supplied on every construction, including `Resume` and `Fork`, the
-  same pattern as the user agent. A fork of a pre-bump session therefore
-  renders the fork's identity; the session it forked from keeps its
-  recorded line on resume.
+- **New sessions render the identity; resume and fork inherit the recorded
+  text.** Resume is correct, since it replays the session that ran, and a
+  fork copies its parent's recorded prompt — identity line included. The
+  re-supplied `Identity` reaches a fork's *new children*, not the fork's
+  inherited prompt, so a fork of a pre-bump session keeps that session's
+  identity line until `/new` starts a fresh contract. `Identity` is not
+  recorded, so every construction supplies it, the same pattern as the user
+  agent.
 - **The wiring is two fields and a base catalog.** `acodeIdentity` is set
   at both construction sites (`cmd/acode/run.go:240` for the engine spec,
   `run.go:402` for the runner config, which covers TUI children through
   the spawner), and the five definitions seed `LoadAgents`
   (`cmd/acode/tui.go:765`). The `SystemPrompt` plumbing through
-  `config.go:126`/`run.go:412` exists and stays unused — tier 3, held in
-  reserve.
-- **Recorded verbatim, 32 KiB cap.** New sessions record the v3 body with
-  the acode identity line and the catalog of acode's own definitions.
+  `config.go:126`/`run.go:412` is replay plumbing, not composition: the TUI
+  writes its own `session_start`, so it re-supplies the recorded prompt on
+  resume and fork (`models.go:426`); batch lets the engine inherit it. The
+  tier-3 replacement path is unused.
+- **Recorded verbatim, 32 KiB cap.** A new TUI session records the v3 body
+  with the acode identity line and the catalog of acode's own definitions.
+  A batch new session records the same identity and body without a catalog:
+  batch withholds `delegate` and loads no definitions, so a catalog would
+  advertise roles it cannot call.
+- **`/new` starts a fresh contract.** Resume and fork leave the recorded
+  prompt, versions, agent, and grant on the host config for replay; `/new`
+  clears them before writing its `session_start`, so a fresh TUI session
+  records the current prompt version, the acode identity, the catalog, and
+  its own grant.
 - **It lives in `cmd/acode`**, which [AGENTS.md](../../AGENTS.md) assigns
   "wiring and I/O only" — setting two config fields and seeding a base
   catalog is wiring; the loop, projection, and session contracts stay in
@@ -620,16 +634,19 @@ which also covers its research-flavored uses.
 
 Remaining work: the §13 probe pass, run against the tagged SDK plus this tree,
 and the two watch items (§4.5 reconciliation, §5's read-cost check for
-explore). Both need a real model and fixtures, not code.
+explore). Both need a real model and fixtures, not code; the code-side gaps
+found by the post-bump audit are recorded and fixed in §13.
 
 ## 9. Intended behavior changes
 
-1. **Landed.** New/fork parent sessions record the acode prompt: the
+1. **Landed.** A new TUI parent session records the acode prompt: the
    identity line "You are acode, a coding harness working in the workspace
    %q.", the v3 SDK body with the independence criterion, and the catalog of
-   acode's definitions. Resume replays the recorded text and is unchanged.
-   New sessions record `prompt-v3` where they recorded `prompt-v2` before —
-   the inherited version bump.
+   acode's definitions. New sessions record `prompt-v3` where they recorded
+   `prompt-v2` before — the inherited version bump. A new batch session
+   records the same identity and body but no catalog, because batch withholds
+   `delegate` and loads no definitions. Resume replays the recorded text, and
+   a fork inherits its parent's recorded prompt, identity line included.
 2. **Landed.** Children introduce themselves as acode agents, not aharness
    agents.
 3. **Landed upstream, inherited.** Children are told to read the workspace's
@@ -644,6 +661,11 @@ explore). Both need a real model and fixtures, not code.
 6. **Landed.** The agent catalog lines changed (the five descriptions),
    shipped in acode's own definitions; the SDK's bundled set no longer
    exists.
+7. **Fixed: `/new` starts a fresh contract.** After a resume or fork, `/new`
+   used to copy that session's replay values — prompt, prompt/toolset
+   versions, agent, and grant — into the new log, so a fresh TUI session
+   could record a pre-bump `aharness` prompt or a batch grant that withholds
+   `delegate`. `/new` now resets them and records the current contract.
 
 No CLI flag, environment variable, config key, slash command, or exit code
 changes. `-ui-json` and the transcript change only where the identity line
@@ -657,7 +679,7 @@ shipped rows `default` instead of `bundled`.
 | DEC1 | acode replaces the SDK prompt, or appends to it? | **Neither — inherit, under tier 1** (§4.1). v0.3.0 split ownership so that replacing the prompt would retype four coding-policy lines the product needs, the duplication the leanness audit exists to catch. Identity is one field; the body is the SDK's v3 default. Tier 2/3 remain available with `LoopRules`/`AgentCatalogText` if acode ever grows real product rules. |
 | DEC2 | Where does delegation guidance live? | **Split as proposed, then further upstream.** Mechanics and self-containment stay in the SDK body; the independence criterion went upstream too (§4.5), because it is about the value of fresh context, not which role to pick. Role *selection* policy lives in acode's descriptions (§6) — the parent's only routing signal. |
 | DEC3 | Transcribe the contract lines to avoid an SDK dependency? | **Never — and now moot.** Nothing is composed, so nothing is transcribed; `LoopRules()` exists for a tier-2 move. |
-| DEC4 | Role text without a prompt version bump? | **Resolved: ship without a bump.** Sessions record the resolved prompt for parents and children (§2 fact 2, verified), and acode's resume re-supplies the recorded text, so pre-bump sessions replay byte-identically and only new sessions see new role text. |
+| DEC4 | Role text without a prompt version bump? | **Resolved: ship without a bump.** Sessions record the resolved prompt for parents and children (§2 fact 2, verified), and a resume replays it rather than re-rendering, so pre-bump sessions replay byte-identically and only new sessions see new role text. Pinned by `TestBinaryResumeReplaysRecordedPrompt`, which compares a seeded prompt-v2 session's log and model request against its recorded text. |
 | DEC5 | Pilot before landing Phase 1? | **Retired.** `DefaultAgents` is gone, so a pilot had nothing to override; the SDK's breaks are compile-time, and the bump forced the change. |
 | DEC6 | Project-instructions read for read-only roles too? | **Resolved upstream: yes, keep it in the shared body** — the reviewer is read-only and is the role that reviews against repo policy. The split to mutating role bodies stays available with no version bump if probes show the read costing explore (§5). |
 | DEC7 | Widen `reviewer` tools (`run_command` for `git diff`/tests)? | **Resolved: keep the grant read-only** (`read_file`, `search`), with the reworded body (§6). A read-only reviewer cannot report a verification it did not perform, keeps review fan-out concurrent, and matches the every-reviewer-is-read-only finding in the SDK's research; the parent hands it the diff. |
@@ -681,9 +703,9 @@ shipped rows `default` instead of `bundled`.
 | Layer | Coverage |
 |---|---|
 | SDK unit (upstream, shipped) | v3 pins for all nine rule bullets and the delegation criterion; exact SHA-256 pins for v0/v1/v2; child identity for a v3 child; the tag's resume/fork rules; the fork-with-instructions append fix; the discovery seam's base/file precedence and caps. |
-| acode unit | `cmd/acode/agents_test.go`: the roster, exact descriptions and byte counts (193/191/178/189/145, cap 200), exact bodies, grants, the task-grant drift pin against `tools.NamesWithout("delegate")`, and operator-file precedence (a same-name file wins; a malformed file warns without replacing). |
-| acode integration | The parent records the acode identity line, the shipped reviewer description in the catalog, and the v3 verify/report rule; the child records the acode identity line and its role grant; resume replays recorded prompts byte-identically (the pre-bump case is the same mechanism, DEC4). |
-| TUI | Definitions browser renders the shipped set with source `default`, operator rows with `user` and their path, and warnings; catalog lines come from the effective definitions. |
+| acode unit | `cmd/acode/agents_test.go`: the roster, exact descriptions and byte counts (193/191/178/189/145, cap 200), exact bodies, grants, the task-grant drift pin against `tools.NamesWithout("delegate")`, and operator-file precedence (a same-name file wins; a malformed file warns without replacing). `cmd/acode/sessions_test.go`: `/new` after a resumed pre-bump session records the current prompt, versions, identity, catalog, and a fresh grant. |
+| acode integration | The TUI parent records the acode identity line, the shipped reviewer description in the catalog, and the v3 verify/report rule; the child records the acode identity line and its role grant; a batch parent records the identity and v3 rule without a catalog; resume replays a pre-bump prompt, agent, and grant in the log and the prompt in the model request; a batch fork inherits the parent's recorded prompt and role, and a TUI fork re-supplies the parent's prompt, role, and grant into its own `session_start`. |
+| TUI | Definitions browser renders the shipped set with source `default`, operator rows with `user` and their path, and invalid rows with their parse error; discovery warnings surface as startup notices. Catalog lines come from the effective definitions. |
 | Probes (real model) | §13's behaviors below — the one evidence class still missing. |
 | DoD | `make dod` after the bump (green, §13); real-provider and real-terminal smokes recorded as pending where credentials are unavailable. |
 
@@ -696,6 +718,26 @@ coverage as in §12: the definitions pins, the precedence test, and the
 end-to-end recorded-prompt assertions (parent identity line, catalog
 description, v3 rule; child identity line). Deviations from the original
 plan: Phase 0 retired, P1.2 dead, P3 superseded by tier 1 (§8).
+
+**Record (2026-11-19, prompt-surface audit).** An independent review of the
+bump found four gaps. `/new` after `ResumeSession` or a startup `-fork`
+re-recorded the previous session's replay values (prompt, prompt/toolset
+version, agent, and grant), so a fresh TUI session could keep an `aharness`
+identity line or a batch grant that withholds `delegate`; `NewSession` now
+resets them (`cmd/acode/sessions.go`), and
+`TestTUIHostNewSessionStartsAFreshContract` pins the resume leg (the reset is
+unconditional). The §12 resume-replay assertion did not exist;
+`TestBinaryResumeReplaysRecordedPrompt` now compares a seeded prompt-v2
+session's log (prompt, agent, grant) and model request against its recorded
+text. The §4.2 fork-identity sentence contradicted the SDK: a fork inherits
+the parent's recorded prompt and only its new children use the re-supplied
+identity, pinned by `TestBinaryForkInheritsRecordedPrompt` for the engine
+path and `TestBinaryUIJSONForkInheritsRecordedPrompt` (prompt, agent, and
+grant) for the TUI's own `session_start` path.
+`TestBinaryBatchPromptShape` pins the batch parent's identity/v3 prompt with
+no catalog. §4.2, §9.1, and §12 are corrected accordingly. `make dod` green:
+goimports, `go vet`, `golangci-lint` (0 issues), `go test -race -count=1
+./...`, `go build`, `govulncheck` (no vulnerabilities), `docs-check`.
 
 **Pending: the probe pass.** The upstream release was tagged with its
 §7.2 probes unrun, and this bump inherits that gap: probes 1 and 2 below

@@ -37,6 +37,11 @@ type recordedSessionStart struct {
 	SessionTimeoutMS int64          `json:"session_timeout_ms"`
 	ModelTimeoutMS   int64          `json:"model_timeout_ms"`
 	ThinkingEffort   string         `json:"thinking_effort"`
+	PromptVersion    string         `json:"prompt_version"`
+	ToolsetVersion   string         `json:"toolset_version"`
+	SystemPrompt     string         `json:"system_prompt"`
+	Agent            string         `json:"agent"`
+	Tools            []string       `json:"tools"`
 }
 
 type recordedRunStart struct {

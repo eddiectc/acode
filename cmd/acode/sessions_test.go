@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -62,6 +63,29 @@ func createTestSession(t *testing.T, stateDir, workspace, modelName, thinkingEff
 			_ = store.Close()
 			t.Fatalf("append user message: %v", err)
 		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	return id
+}
+
+// createTestSessionWithContract writes a session log whose recorded contract is
+// adjusted by mutate after the base config is built. Tests use it to seed a
+// pre-bump session: the recorded prompt, version, agent, and grant then differ
+// from the current defaults.
+func createTestSessionWithContract(t *testing.T, stateDir, workspace, modelName string, mutate func(*config)) string {
+	t.Helper()
+	cfg := testSessionConfig(t, stateDir, workspace, modelName)
+	mutate(&cfg)
+	id := session.NewID()
+	store, err := session.Create(stateDir, id)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := agent.WriteSessionStart(store, runnerConfig(cfg), nil); err != nil {
+		_ = store.Close()
+		t.Fatalf("write session start: %v", err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("close session: %v", err)
@@ -204,6 +228,75 @@ func TestTUIHostNewSessionReplacesTheStore(t *testing.T) {
 		t.Fatalf("old session stayed locked: %v", err)
 	}
 	_ = reopened.Close()
+}
+
+// TestTUIHostNewSessionStartsAFreshContract pins the replay boundary after a
+// session switch: the recorded prompt, versions, agent, and grant belong to
+// the session they were resumed from. /new must start from the current
+// contract, or a pre-bump prompt (including an aharness identity line) and a
+// batch grant that withholds delegate would leak into a fresh TUI session.
+func TestTUIHostNewSessionStartsAFreshContract(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	workspace := t.TempDir()
+	host, _ := newSessionHost(t, stateDir, workspace)
+	host.cfg.Agents = agent.LoadAgents(testDefaultDefinitions(t), t.TempDir()).Infos()
+
+	legacyPrompt := "You are aharness, a coding harness working in the workspace \"/legacy\".\n\n- Legacy v2 rules."
+	legacy := createTestSessionWithContract(t, stateDir, workspace, "model-current", func(cfg *config) {
+		cfg.PromptVersion = agent.PromptVersionV2
+		cfg.SystemPrompt = legacyPrompt
+		cfg.Agent = "explore"
+		cfg.Tools = []string{"read_file"}
+	})
+	if _, err := host.ResumeSession(legacy); err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+	if host.cfg.SystemPrompt != legacyPrompt || host.cfg.PromptVersion != agent.PromptVersionV2 {
+		t.Fatalf("resume did not inherit the recorded contract: prompt=%q version=%q",
+			host.cfg.SystemPrompt, host.cfg.PromptVersion)
+	}
+
+	snapshot, err := host.NewSession(tui.RunOptions{Model: "model-current"})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	events, err := session.Read(snapshot.Info.TracePath)
+	if err != nil {
+		t.Fatalf("read new log: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != session.TypeSessionStart {
+		t.Fatalf("new log events = %+v, want one session_start", events)
+	}
+	var start struct {
+		PromptVersion  string   `json:"prompt_version"`
+		ToolsetVersion string   `json:"toolset_version"`
+		SystemPrompt   string   `json:"system_prompt"`
+		Agent          string   `json:"agent"`
+		Tools          []string `json:"tools"`
+	}
+	if err := json.Unmarshal(events[0].Data, &start); err != nil {
+		t.Fatalf("decode session_start: %v", err)
+	}
+	if start.PromptVersion != agent.PromptVersion || start.ToolsetVersion != tools.Version {
+		t.Fatalf("new contract versions = %q/%q, want %q/%q",
+			start.PromptVersion, start.ToolsetVersion, agent.PromptVersion, tools.Version)
+	}
+	for _, want := range []string{
+		"You are acode, a coding harness working in the workspace",
+		"Run the relevant tests before reporting the change done",
+		"- reviewer: ",
+	} {
+		if !strings.Contains(start.SystemPrompt, want) {
+			t.Fatalf("new prompt lacks %q:\n%s", want, start.SystemPrompt)
+		}
+	}
+	if strings.Contains(start.SystemPrompt, legacyPrompt) {
+		t.Fatalf("new prompt replayed the resumed session's prompt:\n%s", start.SystemPrompt)
+	}
+	if start.Agent != "" || start.Tools != nil {
+		t.Fatalf("new contract agent/tools = %q/%v, want a fresh root session", start.Agent, start.Tools)
+	}
 }
 
 func TestTUIHostResumeSessionInheritsRecordedSettings(t *testing.T) {

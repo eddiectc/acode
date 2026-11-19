@@ -11,6 +11,7 @@ import (
 	"github.com/eddiectc/aharness/engine"
 	"github.com/eddiectc/aharness/model"
 	"github.com/eddiectc/aharness/session"
+	"github.com/eddiectc/aharness/tools"
 )
 
 const (
@@ -129,6 +130,16 @@ func (h *tuiHost) NewSession(opts tui.RunOptions) (tui.SessionSnapshot, error) {
 	cfg := h.cfg
 	cfg.ResumeID = ""
 	cfg.ForkID = ""
+	// A new session starts a fresh contract. The prompt, versions, agent, and
+	// grant on h.cfg are replay values inherited from whichever session was
+	// resumed or forked last; carrying them here would make /new record a
+	// session contract it never ran — a pre-bump prompt and version, or a
+	// batch grant that withholds delegate from a TUI session.
+	cfg.PromptVersion = agent.PromptVersion
+	cfg.ToolsetVersion = tools.Version
+	cfg.SystemPrompt = ""
+	cfg.Agent = ""
+	cfg.Tools = nil
 	store, err := session.CreateNew(cfg.StateDir)
 	if err != nil {
 		return tui.SessionSnapshot{}, fmt.Errorf("create session log: %w", err)
