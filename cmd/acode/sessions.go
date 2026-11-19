@@ -138,8 +138,16 @@ func (h *tuiHost) NewSession(opts tui.RunOptions) (tui.SessionSnapshot, error) {
 	cfg.PromptVersion = agent.PromptVersion
 	cfg.ToolsetVersion = tools.Version
 	cfg.SystemPrompt = ""
+	cfg.AppendedPrompt = ""
 	cfg.Agent = ""
 	cfg.Tools = nil
+	// /new mints a fresh contract, so it reads the workspace instructions once
+	// and records them before the session_start write. A resumed or forked
+	// legacy log also starts with an empty prompt, which is why the seed lives
+	// at this site rather than behind an empty-prompt check in a shared helper.
+	if warning := seedWorkspaceInstructions(&cfg, h.ws); warning != "" {
+		warnings = append(warnings, warning)
+	}
 	store, err := session.CreateNew(cfg.StateDir)
 	if err != nil {
 		return tui.SessionSnapshot{}, fmt.Errorf("create session log: %w", err)

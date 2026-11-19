@@ -123,6 +123,24 @@ records turns, provider usage totals and subsets, and an observational cost
 estimate from the catalog price snapshot. The estimate is not a billing
 authority.
 
+## Workspace instructions
+
+On a new session, acode reads the workspace's root `AGENTS.md` (up to 16 KiB)
+and composes it into the system prompt after the built-in rules and, in the
+TUI, the agent catalog. The text is recorded once in the session log as
+`system_prompt` and again as `appended_prompt`, so a fresh delegated child
+inherits the same workspace rules after its role body. Resume and fork replay
+the recorded prompt; they never re-read the file, and a log written before
+`appended_prompt` existed seeds no children. `/new` is the way to pick up a
+changed file.
+
+A missing or empty file changes nothing. A file over 16 KiB, a symlink, a
+directory, or an unreadable file is skipped with a warning and the session
+still starts; the model can still open a larger file with `read_file`. The
+file is workspace content, not executable config: acode does not parse it or
+run anything from it, and a cloned repository can therefore inject
+instructions into the model's context.
+
 ## Delegated subagents
 
 The `delegate` tool runs up to four child agents in one call. Each child is a

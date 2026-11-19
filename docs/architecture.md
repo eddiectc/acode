@@ -45,6 +45,37 @@ duplicated in this repository.
 The module is `github.com/eddiectc/acode`. It depends on the tagged aharness
 release pinned in `go.mod`.
 
+### Workspace instructions
+
+On a **new** session only, acode reads the workspace's root `AGENTS.md` through
+the SDK workspace handle (`tools.Workspace.ReadDisplayFile`), which applies the
+same path policy as the file tools: a workspace-relative path, no symlink
+components, no `.git` component, and a regular file. The read is capped at 16
+KiB. The bytes are invalid-UTF-8 sanitized and passed to the SDK's prompt input:
+batch sets `engine.Spec.AppendPrompt`, whose engine folds the text after the
+rendered prompt and records it; the TUI composes the same `"\n\n"` join itself
+with `agent.RenderSystemPrompt`, because it writes its own `session_start`.
+
+Both fields are recorded once in `session_start`: `system_prompt` is the exact
+prompt the model saw, and `appended_prompt` is the workspace text that was
+composed into it. `appended_prompt` is provenance, never a replay key: SDK
+projection keeps using `system_prompt`, and the recorded value is not
+necessarily a suffix after the SDK's prompt cap. A fresh delegated child
+composes the parent's `appended_prompt` after its own rules and role body into
+its recorded `system_prompt`, and the child records no `appended_prompt`; a
+continued child appends nothing.
+
+Resume and fork never re-read the file. They replay the recorded
+`system_prompt` and carry the recorded `appended_prompt` to their own children.
+A log written before the field has none to carry, so its new children get no
+seed; the SDK's v3 read rule remains their fallback, and `/new` is the way to
+mint a fresh contract. A missing or empty file changes nothing. A larger file,
+a symlink, a directory, or an unreadable file is skipped with one warning on
+stderr in batch or one TUI notice; the session still starts. The text is
+workspace content, not executable configuration: acode does not parse it or
+run anything from it, and a cloned repository can therefore inject
+instructions into the model's context.
+
 ## 2. Package layout
 
 ```text
@@ -62,6 +93,7 @@ cmd/acode/
   control.go           # operation controller and batch signal delivery
   agents.go            # acode identity and the five embedded role definitions
   agents/*.md          # the shipped roles; operator files override them by name
+  workspace_instructions.go # root AGENTS.md reader and new-session prompt seed
   models.go            # catalog wiring and list/refresh actions
   sessions.go          # session selection and metadata helpers
   tui.go               # TUI host, session shell, -ui-json wiring, summary

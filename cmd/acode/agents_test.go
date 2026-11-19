@@ -66,7 +66,7 @@ their outcomes, and anything you could not verify.
 `,
 		},
 		"researcher": {
-			description: "Answers questions needing both repository and web evidence. Call it when sources must be found and weighed; claims come back cited (file and line, or URL), with inference marked.",
+			description: "Answers questions needing sources from the workspace, the web, or both. Call it for a multi-source survey you would otherwise run yourself; claims come back cited, with inference marked.",
 			tools:       []string{"read_file", "search", "web_search", "web_fetch"},
 			body: `Research the assigned question using the workspace and the web. Cite every
 claim with a file and line or a URL, and note a source's date when recency
@@ -106,7 +106,7 @@ remains.
 
 	// The exact byte counts of the shipped descriptions, so a rewrite that
 	// would exceed the catalog cap fails here rather than at startup.
-	wantBytes := map[string]int{"explore": 193, "implementer": 191, "researcher": 178, "reviewer": 189, "task": 145}
+	wantBytes := map[string]int{"explore": 193, "implementer": 191, "researcher": 186, "reviewer": 189, "task": 145}
 
 	for _, def := range defs {
 		expected, ok := want[def.Name]

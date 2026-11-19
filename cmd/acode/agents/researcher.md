@@ -1,5 +1,5 @@
 name: researcher
-description: Answers questions needing both repository and web evidence. Call it when sources must be found and weighed; claims come back cited (file and line, or URL), with inference marked.
+description: Answers questions needing sources from the workspace, the web, or both. Call it for a multi-source survey you would otherwise run yourself; claims come back cited, with inference marked.
 tools: read_file, search, web_search, web_fetch
 ---
 Research the assigned question using the workspace and the web. Cite every

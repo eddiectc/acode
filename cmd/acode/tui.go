@@ -914,6 +914,14 @@ func openTUIHost(cfg config, stderr io.Writer) (*tuiHost, int) {
 			_, _ = fmt.Fprintf(stderr, "acode: create session log: %v\n", tui.SanitizeLine(err.Error()))
 			return fail(exitSetup)
 		}
+		// A new TUI session writes its own session_start, so it composes the
+		// workspace text itself: the SDK helper renders the base, and the same
+		// "\n\n" join the engine uses keeps a TUI and batch session over the same
+		// file identical below the cap. The seed is provenance for children and
+		// is never re-read on resume or fork.
+		if warning := seedWorkspaceInstructions(&cfg, ws); warning != "" {
+			warn(warning)
+		}
 		if err := agent.WriteSessionStart(store, runnerConfig(cfg), nil); err != nil {
 			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
 			return fail(exitSetup)

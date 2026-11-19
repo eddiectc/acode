@@ -145,7 +145,20 @@ func executeNew(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *s
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
 		return exitConfig
 	}
-	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeNew, "", logger))
+	// A new session is the only contract that discovers workspace
+	// instructions. Read once through the SDK handle, then let the engine fold,
+	// record, and propagate the text. Resume and fork replay what they
+	// recorded instead.
+	ws, code := openWorkspace(cfg, stderr)
+	if ws == nil {
+		return code
+	}
+	instructions, readErr := readWorkspaceInstructions(ws)
+	_ = ws.Close()
+	if readErr != nil {
+		warnf(stderr, "workspace instructions skipped: %s", sanitizeText(readErr.Error()))
+	}
+	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeNew, "", instructions, logger))
 	if err != nil {
 		return engineFailure(err, stderr)
 	}
@@ -182,7 +195,7 @@ func executeResume(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
 		return exitConfig
 	}
-	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeResume, cfg.ResumeID, logger))
+	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeResume, cfg.ResumeID, "", logger))
 	if err != nil {
 		return engineFailure(err, stderr)
 	}
@@ -219,7 +232,7 @@ func executeFork(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
 		return exitConfig
 	}
-	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeFork, cfg.ForkID, logger))
+	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeFork, cfg.ForkID, "", logger))
 	if err != nil {
 		return engineFailure(err, stderr)
 	}
@@ -228,9 +241,10 @@ func executeFork(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *
 }
 
 // batchEngineSpec maps the resolved CLI configuration onto the shared engine
-// contract. Batch withholds delegate from execution without rewriting the
-// recorded session contract.
-func batchEngineSpec(cfg config, mode engine.Mode, sessionID string, logger *slog.Logger) engine.Spec {
+// contract. instructions is the new-session workspace text; the engine
+// composes and records it, and only ModeNew may carry it. Batch withholds
+// delegate from execution without rewriting the recorded session contract.
+func batchEngineSpec(cfg config, mode engine.Mode, sessionID, instructions string, logger *slog.Logger) engine.Spec {
 	effort := cfg.ThinkingEffort
 	spec := engine.Spec{
 		Workspace:      cfg.Workspace,
@@ -269,6 +283,8 @@ func batchEngineSpec(cfg config, mode engine.Mode, sessionID string, logger *slo
 		spec.GrantSet = true
 		if mode == engine.ModeNew {
 			spec.CustomToolsSet = true
+			spec.AppendPrompt = instructions
+			spec.AppendPromptSet = instructions != ""
 		}
 	}
 	return spec
@@ -410,6 +426,7 @@ func runnerConfig(cfg config) agent.Config {
 		// judge or stop it.
 		Tools:          batchTools(cfg),
 		SystemPrompt:   cfg.SystemPrompt,
+		AppendedPrompt: cfg.AppendedPrompt,
 		Agent:          cfg.Agent,
 		Agents:         cfg.Agents,
 		Limits:         cfg.Limits,

@@ -37,6 +37,7 @@ names which sources exist for that row.
 | `-catalog-timeout` | 15 seconds | flag, `ACODE_CATALOG_TIMEOUT`, `catalog_timeout` | Bound on one catalog request, including body reads. Must be positive; valid for terminal catalog actions too. |
 | `-log-requests` / `ACODE_LOG_REQUESTS` | off | flag, env, `log_requests` | Records each projected model request as a debug event, capped at 1 MiB. |
 | `-task` / `-task-file` | no read cap | flag | Per-invocation only; effective transcript text is 64 KiB. |
+| Workspace instructions | 16 KiB | — (fixed policy) | New sessions only: the workspace-root `AGENTS.md`, read once through `tools.Workspace.ReadDisplayFile`. An absent or empty file changes nothing. A larger, symlinked, non-regular, or unreadable file is skipped with one warning and the session still starts. The text is recorded in `session_start.system_prompt` and `session_start.appended_prompt`; `appended_prompt` is provenance, not a replay key. Resume and fork replay the recording and never re-read; fresh delegated children inherit the recorded text. |
 | Steering message | 64 KiB | TUI | Composer submission while a run is active. |
 | Session selection | UUIDv7 ID | flag | `-resume`/`-fork` resolve under the state directory; no arbitrary paths. |
 | Provider token | no length cap | `ACODE_PROVIDER_TOKEN` only | In memory only; never logged or passed to tools; deliberately not a flag or config key. |
@@ -62,8 +63,9 @@ reasonably disagree for the same binary:
 - **Intentionally fixed:** body and stream caps, tool result caps, the search
   response/result/output/snippet caps, the 15-second search timeout, the
   session line and schema versions, file modes, retention, the retry policy,
-  UI display caps, and the `-ui-json` protocol caps. Each defines the wire
-  format, the replay contract, or a display-only safety boundary.
+  the 16 KiB workspace-instructions cap and its skip rule, UI display caps,
+  and the `-ui-json` protocol caps. Each defines the wire format, the replay
+  contract, or a display-only safety boundary.
 
 ## 2. TUI and `-ui-json`
 

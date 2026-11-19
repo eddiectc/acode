@@ -124,7 +124,11 @@ process). Runs must be idle: while a run is active the command reports that
 session switching is disabled and changes nothing.
 
 `/new` writes only the new session's `session_start`; it emits no command event
-and does not copy history or todo state from the old session.
+and does not copy history or todo state from the old session. It also mints a
+fresh prompt contract: it re-reads the workspace-root `AGENTS.md`, if present,
+and composes it into the new `system_prompt` and `appended_prompt`; a skipped
+file adds a warning notice. A resumed or forked session keeps its recorded
+prompt instead and never re-reads the file.
 
 ### `/resume`
 

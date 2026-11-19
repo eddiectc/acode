@@ -40,6 +40,7 @@ type recordedSessionStart struct {
 	PromptVersion    string         `json:"prompt_version"`
 	ToolsetVersion   string         `json:"toolset_version"`
 	SystemPrompt     string         `json:"system_prompt"`
+	AppendedPrompt   string         `json:"appended_prompt"`
 	Agent            string         `json:"agent"`
 	Tools            []string       `json:"tools"`
 }

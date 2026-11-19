@@ -121,10 +121,13 @@ type config struct {
 
 	// The recorded session contract. Tools is the tool-name grant (nil means
 	// every tool of the recorded version); SystemPrompt and Agent are set for
-	// a delegated child session.
-	Tools        []string
-	SystemPrompt string
-	Agent        string
+	// a delegated child session. AppendedPrompt is the workspace text already
+	// composed into SystemPrompt; it is provenance for the recorded log and the
+	// source new children inherit from, never an append input.
+	Tools          []string
+	SystemPrompt   string
+	AppendedPrompt string
+	Agent          string
 	// Agents is the discovered definition catalog rendered into the current
 	// parent prompt.
 	Agents []agent.AgentInfo
