@@ -7,11 +7,12 @@ import (
 	"runtime/debug"
 )
 
-// version is stamped into the binary by a release build, for example
+// version is stamped into the binary by the release build, for example
 // -ldflags "-X main.version=v1.2.3". The linker writes it once; nothing
 // assigns it at runtime, and an empty value falls back to the module version.
-// A container image build excludes .git, so it has no VCS metadata to derive
-// a version from and must stamp one.
+// A release build runs in a checkout, so it also carries VCS metadata; a build
+// of a source tree without one (an exported tarball, say) has to pass the
+// flag to report anything but the module version.
 var version string
 
 // buildInfo is the subset of runtime/debug build metadata the CLI reports.

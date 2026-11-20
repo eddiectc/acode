@@ -3,16 +3,35 @@ GOIMPORTS ?= goimports
 GOLANGCI_LINT ?= golangci-lint
 GOVULNCHECK ?= govulncheck
 BIN := bin/acode
+DIST := dist
 INSTALL_DIR ?= $(HOME)/.local/bin
 PKGS := ./...
+# The image runs linux whatever the host is, so this is not GOOS.
+IMAGE_GOOS := linux
+IMAGE_GOARCH := $(shell $(GO) env GOARCH)
 
-.PHONY: all build install test vet clean docs-check fmt-check lint vuln dod
+.PHONY: all build install test vet clean docs-check fmt-check lint vuln dod dist image
 
 all: build test
 
 build:
 	mkdir -p bin
 	$(GO) build -trimpath -o $(BIN) ./cmd/acode
+
+# The tree the image copies from: dist/linux/<arch>/acode. The Release workflow
+# builds the same path for each platform it publishes.
+dist:
+	mkdir -p $(DIST)/$(IMAGE_GOOS)/$(IMAGE_GOARCH)
+	CGO_ENABLED=0 GOOS=$(IMAGE_GOOS) GOARCH=$(IMAGE_GOARCH) \
+	  $(GO) build -trimpath -o $(DIST)/$(IMAGE_GOOS)/$(IMAGE_GOARCH)/acode ./cmd/acode
+
+# Needs a working container runtime and BuildKit. VERSION labels the image; the
+# binary reports what `make dist` built, so the two can differ in a local build.
+image: dist
+	docker build \
+	  --build-arg VERSION="$$(git describe --tags --always)" \
+	  --build-arg REVISION="$$(git rev-parse HEAD)" \
+	  -t acode:local .
 
 install: build
 	mkdir -p $(INSTALL_DIR)
@@ -73,4 +92,4 @@ docs-check:
 	exit $$status
 
 clean:
-	rm -rf bin
+	rm -rf bin $(DIST)

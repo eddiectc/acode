@@ -1,0 +1,231 @@
+name: Release
+
+# Everything acode publishes, from one commit:
+#   - tarballs for linux and darwin, amd64 and arm64, plus a SHA256SUMS file,
+#     attested and attached to the GitHub Release for a vX.Y.Z tag
+#   - ghcr.io/<owner>/<repo>: latest on every commit to main, the semver tags
+#     for a vX.Y.Z tag, and a short-sha tag on every published build
+# A pull request builds both and publishes nothing.
+#
+# The image copies the linux binaries this workflow produced instead of
+# compiling acode again, so a tag ships one binary in two shapes and
+# `acode -version` reports the same thing whichever way it was fetched.
+#
+# This job gates on the tree compiling, not on the test suite: make dod in
+# ci.yml is the test gate. Tag a release after CI is green.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # One place decides the version string. A tag reports itself, a branch build
+  # reports a devel revision so `acode -version` never claims to be a release it
+  # is not, and the binaries and the image label both use this output.
+  version:
+    name: Resolve the version
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Resolve the stamped version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          if [ "${REF_TYPE}" = "tag" ]; then
+            printf 'value=%s\n' "${TAG}" >> "${GITHUB_OUTPUT}"
+          else
+            printf 'value=devel-%s\n' "$(printf '%s' "${SHA}" | cut -c1-7)" >> "${GITHUB_OUTPUT}"
+          fi
+
+  binaries:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      # A broken platform should not hide the other three.
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # No -buildvcs=false here: the checkout has .git, so the binary carries
+      # the revision `acode -version` reports. -trimpath keeps the build path
+      # out of the binary.
+      - name: Build the binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -eu
+          out="dist/${GOOS}/${GOARCH}"
+          mkdir -p "${out}"
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-X main.version=${VERSION}" \
+            -o "${out}/acode" ./cmd/acode
+
+      # The artifact keeps the tree below dist/, so the image job and the
+      # packaging job both see dist/<goos>/<goarch>/acode after merging.
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  image:
+    name: Build and publish the image
+    needs: [version, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # Both linux variants, so one multi-platform build selects the right one
+      # per target. A pull request builds linux/amd64 only and still finds both.
+      - name: Download the linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-linux-*
+          path: dist
+          merge-multiple: true
+
+      # The runtime stage still runs apt-get, groupadd, and useradd in the
+      # target platform's container, so the arm64 leg needs binfmt handlers
+      # even though nothing is compiled here.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up BuildKit
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive the image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build and publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          # Only a push publishes: main and v* tags are the only push triggers.
+          # A manual dispatch from a branch builds without shipping it.
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.value }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+
+  release:
+    name: Attach the binaries to the release
+    needs: [version, binaries]
+    # A release is a tag. A main push and a pull request publish no files, and
+    # an attestation for them would describe an artifact nobody can download.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # A job-level block replaces the workflow-level one, so every permission the
+    # attestation and the release upload need has to be listed again.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          # The annotated tag message is the release note, so the tag object has
+          # to be in the clone.
+          fetch-depth: 0
+
+      - name: Download the binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: dist
+          merge-multiple: true
+
+      # An artifact download does not preserve the executable bit, so it is
+      # restored here rather than shipped as a 0644 "program".
+      - name: Package the tarballs
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -eu
+          mkdir -p release
+          for binary in dist/*/*/acode; do
+            arch=$(basename "$(dirname "${binary}")")
+            os=$(basename "$(dirname "$(dirname "${binary}")")")
+            chmod 0755 "${binary}"
+            tar --owner=0 --group=0 --numeric-owner -czf \
+              "release/acode_${VERSION}_${os}_${arch}.tar.gz" \
+              -C "$(dirname "${binary}")" acode \
+              -C "${GITHUB_WORKSPACE}" LICENSE
+          done
+          ( cd release && sha256sum -- *.tar.gz > SHA256SUMS )
+          cat release/SHA256SUMS
+
+      - name: Attest the tarballs
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/*.tar.gz
+
+      # Idempotent on a re-run: create the release only if it is not there yet,
+      # and overwrite the assets. Do not delete a published tag (release.md).
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          git tag -l --format='%(contents)' "${TAG}" > release-notes.md
+          gh release view "${TAG}" > /dev/null 2>&1 || \
+            gh release create "${TAG}" \
+              --title "acode ${TAG}" \
+              --notes-file release-notes.md
+          gh release upload "${TAG}" release/*.tar.gz release/SHA256SUMS --clobber

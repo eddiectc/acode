@@ -6,7 +6,7 @@
   [coding standard](coding-standard.md), [container](container.md), and
   [AGENTS.md](../AGENTS.md)
 - **Enforced by:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and
-  [`.github/workflows/image.yml`](../.github/workflows/image.yml)
+  [`.github/workflows/release.yml`](../.github/workflows/release.yml)
 
 This document is the contract between a change and a published artifact. It is
 deliberately small: the repository uses a trunk-based model with short-lived
@@ -60,8 +60,10 @@ automated part of the [definition of done](definition-of-done.md), so a skipped
 or failing `make dod` blocks the merge.
 
 - Open the pull request against `main` from a branch in this repository.
-- The `Image` workflow also runs on a pull request, builds `linux/amd64` only,
-  and publishes nothing. It proves the tree compiles; it is not a test gate.
+- The `Release` workflow also runs on a pull request: it builds all four
+  binaries, builds the image for `linux/amd64` only, and publishes nothing. It
+  proves the tree compiles; it is not a test gate, and the packaging and
+  publish steps are skipped.
 - Do not force-push a branch under review unless the reviewer asked for it.
 - Do not merge with a failing or skipped `make dod`. If a check is wrong, fix
   the check in the same change and say so in the description.
@@ -82,9 +84,11 @@ A release is three steps, in this order:
    git push origin v0.1.0
    ```
 
-3. The tag push starts [`.github/workflows/image.yml`](../.github/workflows/image.yml),
-   which publishes the semver tags and stamps the binary version from the tag
-   ([container §7](container.md#7-continuous-integration)).
+3. The tag push starts [`.github/workflows/release.yml`](../.github/workflows/release.yml),
+   which stamps the version from the tag, builds the `linux` and `darwin`
+   binaries, attaches their tarballs and a `SHA256SUMS` file to the GitHub
+   Release, and publishes the container image built from the same linux
+   binaries ([container §7](container.md#7-continuous-integration)).
 
 Version numbers follow semantic versioning for the CLI and `-ui-json` surface:
 a breaking flag, config key, protocol field, or exit-code change is a major
@@ -93,22 +97,22 @@ those rules still apply, so a breaking change before `v1` is a minor bump and
 must be named in the annotated tag message.
 
 Tag **after** the CI run for that commit is green. A tag on an untested commit
-publishes an untested image, and the tag is what users pin.
+publishes untested artifacts, and the tag is what users pin.
 
 ### Fixing a bad release
 
 There is no hotfix branch. Branch from `main`, fix, merge, and tag the next
 patch. If the bad release is already published, do not delete the tag: publish
 the next patch and mark the old one as withdrawn. Deleting a tag leaves a
-published image that no longer has a matching source tag.
+published image and a GitHub Release that no longer have a matching source tag.
 
 ## 5. What is enforced, and what is convention
 
 | Rule | Enforced by |
 |---|---|
 | `make dod` passes | CI check on the pull request, when branch protection requires it |
-| The tree builds for `linux/amd64`/`linux/arm64` | `Image` workflow, which must succeed to publish |
-| A release tag matches its image and binary version | `Image` workflow stamps `VERSION` from the tag |
+| The tree builds for `linux` and `darwin` on `amd64` and `arm64` | `Release` workflow, which must succeed to publish |
+| A release tag matches its tarballs and its image | `Release` workflow, which stamps the tag into the binary and reuses that string for the image label |
 | Linear history, commit wording, one change per commit | Review, not tooling |
 
 Do not add tooling to enforce commit wording or branch names: the value is in
