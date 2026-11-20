@@ -18,11 +18,12 @@ import (
 // effective defaults. The file itself is written by each test.
 func settingsHost(t *testing.T, path, stateDir string) *tuiHost {
 	t.Helper()
-	return &tuiHost{cfg: config{
+	cfg := config{
 		ConfigPath:       path,
 		StateDir:         stateDir,
 		Provider:         providerName,
 		Model:            "current-model",
+		Dialect:          model.DialectChat,
 		Workspace:        "/workspace",
 		MaxTurns:         20,
 		MaxTotalTokens:   2_000_000,
@@ -34,7 +35,21 @@ func settingsHost(t *testing.T, path, stateDir string) *tuiHost {
 		WebFetchProvider: tools.WebFetchProviderBuiltin,
 		UIRich:           true,
 		SettingSources:   map[string]string{},
-	}}
+	}
+	if err := validateEffective(&cfg); err != nil {
+		t.Fatalf("validate settings host config: %v", err)
+	}
+	return &tuiHost{
+		cfg: cfg,
+		next: runSelection{
+			model:   cfg.Model,
+			dialect: cfg.Dialect,
+			baseURL: cfg.BaseURL,
+			limits:  cfg.Limits,
+			pricing: cfg.Pricing,
+			effort:  cfg.ThinkingEffort,
+		},
+	}
 }
 
 func fieldByKey(t *testing.T, view tui.SettingsView, key string) tui.SettingField {
@@ -247,7 +262,7 @@ func TestTUIHostSetsEveryConfigSetting(t *testing.T) {
 			t.Errorf("%s = %v, want %v", check.name, check.got, check.want)
 		}
 	}
-	if host.cfg.UIRich || !host.cfg.uiRichSet || !host.cfg.UIExpandAll || !host.cfg.uiExpandSet {
+	if host.cfg.UIRich || !host.cfg.UIExpandAll {
 		t.Fatalf("live display settings = %+v", host.cfg)
 	}
 	view := host.Settings()
@@ -295,7 +310,7 @@ func TestTUIHostSetsEveryConfigSetting(t *testing.T) {
 	if !reflect.DeepEqual(loaded, fileConfig{}) {
 		t.Fatalf("config after resetting every key = %+v, want an empty object", loaded)
 	}
-	if !host.cfg.UIRich || host.cfg.uiRichSet || host.cfg.UIExpandAll || host.cfg.uiExpandSet {
+	if !host.cfg.UIRich || host.cfg.UIExpandAll {
 		t.Fatalf("live display settings after reset = %+v", host.cfg)
 	}
 }
@@ -388,10 +403,13 @@ func TestTUIHostSettingCatalogValidation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	host := settingsHost(t, path, dir)
-	host.catalog = map[string]model.CatalogModel{
-		"supported": {ID: "supported", Dialect: model.DialectChat, Reasoning: true, ReasoningEfforts: []string{"low", "high"}},
-		"unusable":  {ID: "unusable", Unavailable: "missing base URL"},
-	}
+	host.catalog = model.Catalog{Models: map[string]model.CatalogModel{
+		"supported": {
+			ID: "supported", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL,
+			ContextWindow: 200_000, Reasoning: true, ReasoningEfforts: []string{"low", "high"},
+		},
+		"unusable": {ID: "unusable", Unavailable: "missing base URL"},
+	}}
 	if err := host.SetSetting("model", "absent"); err == nil || !strings.Contains(err.Error(), "not in the loaded catalog") {
 		t.Fatalf("absent model = %v", err)
 	}
@@ -429,8 +447,8 @@ func TestTUIHostResetsConfigSettings(t *testing.T) {
 		t.Fatalf("seed config: %v", err)
 	}
 	host := settingsHost(t, path, dir)
-	host.cfg.UIRich, host.cfg.uiRichSet = false, true
-	host.cfg.UIExpandAll, host.cfg.uiExpandSet = true, true
+	host.cfg.UIRich = false
+	host.cfg.UIExpandAll = true
 	host.cfg.SettingSources = map[string]string{
 		"max_turns":     "config file",
 		"ui_rich":       "config file",
@@ -456,8 +474,8 @@ func TestTUIHostResetsConfigSettings(t *testing.T) {
 	if err := host.ResetSetting(tui.SettingRich); err != nil {
 		t.Fatalf("reset ui_rich: %v", err)
 	}
-	if !host.cfg.UIRich || host.cfg.uiRichSet {
-		t.Fatalf("live rich after reset = %t/%t", host.cfg.UIRich, host.cfg.uiRichSet)
+	if !host.cfg.UIRich {
+		t.Fatalf("live rich after reset = %t", host.cfg.UIRich)
 	}
 	if field := fieldByKey(t, host.Settings(), tui.SettingRich); field.Value != "true" ||
 		field.Display != "rich" || field.Source != "current" {
@@ -566,13 +584,9 @@ func TestTUIHostRefusesConfigWrites(t *testing.T) {
 	}
 
 	workspace := t.TempDir()
-	ws, err := tools.OpenWorkspace(workspace)
-	if err != nil {
-		t.Fatalf("OpenWorkspace: %v", err)
-	}
-	t.Cleanup(func() { _ = ws.Close() })
 	path := filepath.Join(workspace, "config.json")
-	host := &tuiHost{cfg: config{ConfigPath: path}, ws: ws}
+	host, _ := newSessionHost(t, t.TempDir(), workspace)
+	host.cfg.ConfigPath = path
 	if err := host.SetSetting("max_turns", "4"); err == nil ||
 		!strings.Contains(err.Error(), "workspace") {
 		t.Fatalf("workspace config save = %v, want a refusal", err)

@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/eddiectc/aharness/agent"
-	"github.com/eddiectc/aharness/model"
+	"github.com/eddiectc/aharness/tools"
 )
 
 const (
@@ -180,7 +180,7 @@ func (m *App) statusLine() string {
 	// Tokens are context occupancy against the per-call context ceiling: the
 	// cumulative sum over every response is not comparable to a context window
 	// and grows with each tool round.
-	tokensLabel := "ctx " + formatTokenBudget(contextTokens, m.contextLimit())
+	tokensLabel := "ctx " + formatTokenBudget(contextTokens, m.info.ContextLimit)
 	state := string(m.currentState())
 	renderMode := "rich"
 	if !m.rich {
@@ -511,7 +511,7 @@ func (m *App) renderRunLine(t uiTheme, it *transcriptItem) string {
 	}
 	text := "── " + strings.Join(parts, " · ") + " ──"
 	style := t.dim
-	if it.status == agent.StopInternalError || it.status == agent.StopProviderError || it.status == agent.StopProtocolError {
+	if it.status.Failure() {
 		style = t.errorSty
 	}
 	return style.Render(ansi.Truncate(text, m.width, ""))
@@ -642,8 +642,8 @@ func (m *App) renderTool(t uiTheme, it *transcriptItem) []string {
 	case !it.pending && !it.ok:
 		status = "error"
 	}
-	if it.code != "" && it.code != "ok" {
-		status += " " + it.code
+	if it.code != "" && it.code != tools.CodeOK {
+		status += " " + string(it.code)
 	}
 	if it.truncated {
 		status += " truncated"
@@ -675,7 +675,7 @@ func (m *App) renderTool(t uiTheme, it *transcriptItem) []string {
 		return m.toolBodyRows(t, body, expanded)
 	})
 	out := renderFolded(t, tstyle.Render(ansi.Truncate(head, m.width, "")), rows, foldedTailRows, !expanded)
-	if it.name == "delegate" {
+	if it.name == tools.NameDelegate {
 		out = insertDelegateRows(out, m.delegateRows(it))
 	}
 	return out
@@ -808,21 +808,6 @@ func humanTokens(n int) string {
 	return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 }
 
-// contextLimit reports the effective per-call context ceiling: the host's
-// resolved context window when available, otherwise the selected model's
-// catalog window. Zero means unknown and omits the ratio.
-func (m *App) contextLimit() int {
-	if m.info.ContextLimit > 0 {
-		return m.info.ContextLimit
-	}
-	for _, choice := range m.models {
-		if choice.ID == m.currentModelID() && choice.ContextWindow > 0 {
-			return choice.ContextWindow
-		}
-	}
-	return 0
-}
-
 // formatTurnBudget renders cumulative turns with an explicit positive budget.
 // A zero budget means unlimited and omits the ratio.
 func formatTurnBudget(turns, maxTurns int) string {
@@ -888,5 +873,3 @@ func formatElapsed(d time.Duration) string {
 	}
 	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
 }
-
-var _ = model.Usage{}

@@ -119,12 +119,10 @@ type config struct {
 	Stream    bool
 	StreamSet bool
 
-	// The recorded session contract. Tools is the tool-name grant (nil means
-	// every tool of the recorded version); SystemPrompt and Agent are set for
-	// a delegated child session.
-	Tools        []string
-	SystemPrompt string
-	Agent        string
+	// The recorded session contract. Agent is replayed on resume and fork.
+	// The observed prompt text is the engine host's; this process never
+	// records or touches it.
+	Agent string
 	// Agents is the discovered definition catalog rendered into the current
 	// parent prompt.
 	Agents []agent.AgentInfo
@@ -164,8 +162,6 @@ type config struct {
 	httpTimeoutSet    bool
 	catalogTimeoutSet bool
 	thinkingEffortSet bool
-	uiRichSet         bool
-	uiExpandSet       bool
 }
 
 // envSettings is the environment layer. It is parsed before flags so defaults
@@ -759,8 +755,6 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		httpTimeoutSet:    httpTimeoutLayer.set(),
 		catalogTimeoutSet: catalogTimeoutLayer.set(),
 		thinkingEffortSet: thinkingEffortSet,
-		uiRichSet:         file.UIRich != nil,
-		uiExpandSet:       file.UIExpandAll != nil,
 		SettingSources:    configSettingSources(visited, env, file),
 	}
 	if cfg.maxContextSet {
@@ -1066,6 +1060,10 @@ func resolveStateDir(raw string, getenv func(string) string) (string, error) {
 	return filepath.Join(home, ".acode"), nil
 }
 
+// validateBaseURL rejects a provider base URL the CLI accepts. It is
+// deliberately stricter than model.ValidateBaseURL: userinfo could carry a
+// credential the log would then expose, and a query would be lost when the
+// dialect path is appended.
 func validateBaseURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -1159,22 +1157,14 @@ func validateEffective(cfg *config) error {
 	if cfg.MaxOutputTokens < 0 {
 		return fmt.Errorf("max output tokens must not be negative, got %d", cfg.MaxOutputTokens)
 	}
-	margin := agent.SafetyMargin(cfg.MaxContextTokens)
-	input := cfg.MaxContextTokens - margin
-	if cfg.InputLimit > 0 && cfg.InputLimit < input {
-		input = cfg.InputLimit
+	// A catalog input ceiling can exceed an explicitly clamped window; the
+	// effective cap is the smaller of the two.
+	inputLimit := min(cfg.InputLimit, cfg.MaxContextTokens)
+	limits, err := agent.NewLimits(cfg.MaxContextTokens, cfg.MaxOutputTokens, inputLimit)
+	if err != nil {
+		return fmt.Errorf("max input tokens must be positive: %w (context %d)", err, cfg.MaxContextTokens)
 	}
-	if input <= 0 {
-		return fmt.Errorf("max input tokens must be positive, got %d (context %d, safety margin %d)",
-			input, cfg.MaxContextTokens, margin)
-	}
-	cfg.Limits = agent.Limits{
-		MaxContextTokens: cfg.MaxContextTokens,
-		MaxOutputTokens:  cfg.MaxOutputTokens,
-		SafetyMargin:     margin,
-		MaxInputTokens:   input,
-		CompactionTarget: input,
-	}
+	cfg.Limits = limits
 	return nil
 }
 
@@ -1195,7 +1185,7 @@ func validateSessionRules(cfg *config, state agent.State) error {
 	if cfg.MaxTurns > 0 && state.Turns >= cfg.MaxTurns {
 		return fmt.Errorf("session is at its turn limit (%d >= %d); raise -max-turns", state.Turns, cfg.MaxTurns)
 	}
-	if used := state.Usage.Total() + state.SubagentUsage.Total(); cfg.MaxTotalTokens > 0 && used >= cfg.MaxTotalTokens {
+	if used := state.TotalUsage().Total(); cfg.MaxTotalTokens > 0 && used >= cfg.MaxTotalTokens {
 		return fmt.Errorf("session is at its token limit (%d >= %d); raise -max-total-tokens", used, cfg.MaxTotalTokens)
 	}
 	return nil

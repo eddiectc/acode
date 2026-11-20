@@ -10,14 +10,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/charmbracelet/colorprofile"
 
 	"github.com/eddiectc/acode/internal/tui"
 	"github.com/eddiectc/aharness/agent"
+	"github.com/eddiectc/aharness/engine"
 	"github.com/eddiectc/aharness/model"
-	"github.com/eddiectc/aharness/session"
 	"github.com/eddiectc/aharness/tools"
 )
 
@@ -45,18 +44,17 @@ func (r *hostRun) Terminate() {
 
 func (r *hostRun) Done() <-chan agent.Result { return r.done }
 
-// tuiHost implements tui.Host over the session store, workspace, provider
-// adapter, and runner. It owns the session lock for the process lifetime.
+// tuiHost implements tui.Host over an engine host, which owns the durable
+// session, workspace, work directory, and resolved contract. tuiHost owns only
+// app policy (definitions, operator overrides, catalog, settings) and display
+// state. Per-run model choices live in next; they never rewrite the session.
 type tuiHost struct {
-	cfg              config
-	store            *session.Store
-	ws               *tools.Workspace
-	sessionID        string
-	source           model.CatalogSource
-	catalog          map[string]model.CatalogModel
-	catalogSource    string
-	catalogFetchedAt time.Time
-	models           []tui.ModelChoice
+	host    *engine.Host
+	cfg     config
+	next    runSelection
+	source  model.CatalogSource
+	catalog model.Catalog
+	models  []tui.ModelChoice
 	// agents is the effective catalog loaded for this process, with the
 	// startup overrides applied. It is what a new run's spawner uses.
 	agents *agent.AgentCatalog
@@ -80,7 +78,7 @@ func (h *tuiHost) Info() tui.Info {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	info := h.info
-	info.ThinkingEffort = h.cfg.ThinkingEffort
+	info.ThinkingEffort = h.next.effort
 	return info
 }
 
@@ -91,44 +89,43 @@ func (h *tuiHost) Models() []tui.ModelChoice {
 }
 
 func (h *tuiHost) History() ([]agent.HistoryItem, error) {
-	return agent.History(h.store.Events())
+	return h.host.History()
 }
 
-// modelChoice converts a normalized catalog model into picker metadata.
+// modelChoice converts a normalized catalog model into picker metadata. The
+// effort slice is cloned so a picker edit can never mutate the loaded catalog.
 func modelChoice(m model.CatalogModel) tui.ModelChoice {
-	name := m.Name
-	if name == "" {
-		name = m.ID
+	if m.Name == "" {
+		m.Name = m.ID
 	}
-	return tui.ModelChoice{
-		ID:               m.ID,
-		Name:             name,
-		Dialect:          m.Dialect,
-		ContextWindow:    m.ContextWindow,
-		InputLimit:       m.InputLimit,
-		OutputLimit:      m.OutputLimit,
-		Status:           m.Status,
-		Translated:       m.Translated,
-		Switchable:       true,
-		ReasoningEfforts: append([]string(nil), m.ReasoningEfforts...),
-	}
+	m.ReasoningEfforts = append([]string(nil), m.ReasoningEfforts...)
+	return tui.ModelChoice{CatalogModel: m, Switchable: true}
 }
 
 // recordedChoiceLocked describes the session's current model from recorded
 // values. It is the offline picker fallback and is never switchable then.
 func (h *tuiHost) recordedChoiceLocked(switchable bool) tui.ModelChoice {
-	name := h.cfg.Model
+	name := h.next.model
 	if name == "" {
 		name = h.info.Model
 	}
 	return tui.ModelChoice{
-		ID:            name,
-		Name:          name,
-		Dialect:       h.cfg.Dialect,
-		ContextWindow: h.cfg.MaxContextTokens,
-		InputLimit:    h.cfg.InputLimit,
-		Switchable:    switchable,
+		CatalogModel: model.CatalogModel{
+			ID:            name,
+			Name:          name,
+			Dialect:       h.next.dialect,
+			ContextWindow: h.next.limits.MaxContextTokens,
+			InputLimit:    h.next.limits.MaxInputTokens,
+		},
+		Switchable: switchable,
 	}
+}
+
+// catalogPrice returns the model's price snapshot with this catalog's
+// provenance. An unknown or unpriced model yields the zero snapshot.
+func catalogPrice(cat model.Catalog, id string) model.Pricing {
+	pricing, _ := cat.Price(id)
+	return pricing
 }
 
 // setCatalogLocked replaces the picker entries. A current recorded model that
@@ -138,13 +135,11 @@ func (h *tuiHost) setCatalogLocked(cat model.Catalog) {
 	for _, m := range cat.Usable() {
 		choices = append(choices, modelChoice(m))
 	}
-	if _, ok := cat.Models[h.cfg.Model]; !ok {
+	if _, ok := cat.Models[h.next.model]; !ok {
 		choices = append(choices, h.recordedChoiceLocked(true))
 	}
 	sort.Slice(choices, func(i, j int) bool { return choices[i].ID < choices[j].ID })
-	h.catalog = cat.Models
-	h.catalogSource = cat.Source
-	h.catalogFetchedAt = cat.FetchedAt
+	h.catalog = cat
 	h.models = choices
 }
 
@@ -169,26 +164,20 @@ func (h *tuiHost) RefreshModels(ctx context.Context) ([]tui.ModelChoice, error) 
 	}
 	cat, err := source.Refresh(ctx, cfg.Provider)
 	if err != nil {
-		if !errors.Is(err, model.ErrCatalogCache) || len(cat.Models) == 0 {
-			return nil, err
-		}
-		// The fetch succeeded but the cache write did not. Use the refreshed
-		// in-memory catalog and report the persistence failure as a notice.
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		h.source = source
-		h.setCatalogLocked(cat)
-		return append([]tui.ModelChoice(nil), h.models...), err
+		return nil, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.source = source
 	h.setCatalogLocked(cat)
+	// A cache-write failure is a catalog warning, not a failed refresh.
+	h.pendingWarning = strings.Join(cat.Warnings, "; ")
 	return append([]tui.ModelChoice(nil), h.models...), nil
 }
 
 // SelectModel resolves a picker selection and applies its dialect, base URL,
-// context window, and input ceiling to the next run.
+// context window, and input ceiling to the next run only. The session contract
+// is untouched; a failed selection leaves the previous run selection usable.
 func (h *tuiHost) SelectModel(id string) (tui.ModelChoice, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -196,29 +185,39 @@ func (h *tuiHost) SelectModel(id string) (tui.ModelChoice, error) {
 		return tui.ModelChoice{}, errors.New("session host is closed")
 	}
 	h.pendingWarning = ""
-	if id == h.cfg.Model {
+	if id == h.next.model {
 		// Keep the recorded fallback's exact limits, but prefer loaded catalog
 		// metadata so a re-selection still carries the advertised efforts.
-		if m, ok := h.catalog[id]; ok && m.Unavailable == "" {
-			h.cfg.Pricing = m.Pricing(h.catalogSource, h.catalogFetchedAt)
+		if m, ok := h.catalog.Models[id]; ok && m.Validate() == nil {
+			h.next.pricing = catalogPrice(h.catalog, id)
 			return modelChoice(m), nil
 		}
 		return h.recordedChoiceLocked(true), nil
 	}
-	m, ok := h.catalog[id]
+	m, ok := h.catalog.Models[id]
 	if !ok {
 		return tui.ModelChoice{}, fmt.Errorf("model %q is not in the loaded catalog", id)
 	}
-	if m.Unavailable != "" {
-		return tui.ModelChoice{}, fmt.Errorf("model %q is not usable: %s", id, m.Unavailable)
+	if err := m.Validate(); err != nil {
+		return tui.ModelChoice{}, fmt.Errorf("model %q: %w", id, err)
 	}
-	if err := applyCatalogModel(&h.cfg, m, func(text string) { h.pendingWarning = text }); err != nil {
+	cfg := h.cfg
+	if err := applyCatalogModel(&cfg, m, func(text string) { h.pendingWarning = text }); err != nil {
 		return tui.ModelChoice{}, err
 	}
-	h.cfg.Pricing = m.Pricing(h.catalogSource, h.catalogFetchedAt)
-	if err := validateEffective(&h.cfg); err != nil {
+	cfg.Pricing = catalogPrice(h.catalog, id)
+	if err := validateEffective(&cfg); err != nil {
 		return tui.ModelChoice{}, err
 	}
+	h.next = runSelection{
+		model:   cfg.Model,
+		dialect: cfg.Dialect,
+		baseURL: cfg.BaseURL,
+		limits:  cfg.Limits,
+		pricing: cfg.Pricing,
+		effort:  h.next.effort,
+	}
+	h.info.ContextLimit = cfg.Limits.MaxContextTokens
 	return modelChoice(m), nil
 }
 
@@ -232,7 +231,17 @@ func (h *tuiHost) TakeModelWarning() string {
 	return warning
 }
 
-func (h *tuiHost) Workspace() *tools.Workspace { return h.ws }
+func (h *tuiHost) Workspace() *tools.Workspace { return h.host.WorkspaceHandle() }
+
+// workspaceRoot is the engine workspace root used by operator-state path
+// rules. It is empty before a host exists (unit tests of config-file policy
+// construct a host without one).
+func (h *tuiHost) workspaceRoot() string {
+	if h.host == nil {
+		return ""
+	}
+	return h.host.Workspace()
+}
 
 // Agents returns the definitions the browser should show: the declared set
 // with the current operator overrides applied for display. The process keeps
@@ -274,7 +283,7 @@ func (h *tuiHost) SetAgentOverride(name string, override agent.AgentOverride) er
 	if _, ok := h.baseAgents.LookupDefinition(name); !ok {
 		return fmt.Errorf("agent_overrides[%q]: no agent definition with that name", name)
 	}
-	if withinWorkspace(h.ws, path) {
+	if withinWorkspace(h.workspaceRoot(), path) {
 		return errors.New("the config file is inside the workspace; agent overrides are operator state and are never written there")
 	}
 	// Re-read so an external edit to another key, or to another agent's
@@ -318,16 +327,16 @@ func (h *tuiHost) ClearAgentOverrides(name string) error {
 	return h.SetAgentOverride(name, agent.AgentOverride{})
 }
 
-// withinWorkspace reports whether path is the workspace root or inside it. A
-// relative config path is resolved against the process working directory, which
-// is normally the workspace. Symlinks are resolved too, so a path that reaches
-// the workspace through another directory is still refused; the lexical and the
-// resolved forms are both checked.
-func withinWorkspace(ws *tools.Workspace, path string) bool {
-	if ws == nil {
+// withinWorkspace reports whether path is the workspace or resolves into it.
+// tools.Workspace.Contains answers the other direction (a workspace-relative
+// path that stays inside); operator state must also be refused when it is
+// lexically outside but symlinks into the workspace, so the resolved target is
+// checked here.
+func withinWorkspace(root, path string) bool {
+	if root == "" {
 		return false
 	}
-	root, err := filepath.Abs(ws.Dir())
+	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return false
 	}
@@ -335,16 +344,16 @@ func withinWorkspace(ws *tools.Workspace, path string) bool {
 	if err != nil {
 		return false
 	}
-	if pathWithin(root, target) {
+	if pathWithin(absRoot, target) {
 		return true
 	}
 	if resolved, err := filepath.EvalSymlinks(target); err == nil {
-		return pathWithin(root, resolved)
+		return pathWithin(absRoot, resolved)
 	}
 	// The file may not exist yet, so resolve the directory it will be created
 	// in and check the joined path.
 	if resolvedDir, err := filepath.EvalSymlinks(filepath.Dir(target)); err == nil {
-		return pathWithin(root, filepath.Join(resolvedDir, filepath.Base(target)))
+		return pathWithin(absRoot, filepath.Join(resolvedDir, filepath.Base(target)))
 	}
 	return false
 }
@@ -358,14 +367,14 @@ func pathWithin(root, target string) bool {
 // SteerSubagent routes one composer line to a running delegated child. The
 // child consumes it at its next turn boundary and records it with
 // source=subagent-steer.
-func (h *tuiHost) SteerSubagent(sessionID, text string) error {
+func (h *tuiHost) SteerSubagent(sessionID string, line agent.SteeringLine) error {
 	h.mu.Lock()
 	run := h.active
 	h.mu.Unlock()
 	if run == nil || run.spawner == nil {
 		return fmt.Errorf("no run is active")
 	}
-	return run.spawner.SteerChild(sessionID, text)
+	return run.spawner.SteerChild(sessionID, line)
 }
 
 // SubagentHistory reads one delegated child's display transcript. The latest
@@ -475,29 +484,29 @@ func firstLine(text string) string {
 }
 
 // resolveAgentModel resolves an agent's model and effort through the loaded
-// catalog without mutating the host configuration.
+// catalog without mutating the host configuration. A child that inherits the
+// run's model gets the run selection's recorded values, so an offline resume
+// stays usable and a switched base URL reaches the child.
 func (h *tuiHost) resolveAgentModel(modelID, effort string) (agent.ModelResolution, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
 		return agent.ModelResolution{}, errors.New("session host is closed")
 	}
-	m, ok := h.catalog[modelID]
+	m, ok := h.catalog.Models[modelID]
 	if !ok {
-		if modelID == h.cfg.Model {
-			// Offline resume/fork: the recorded values are authoritative until a
-			// catalog loads, so an inherited model stays usable.
+		if modelID == h.next.model {
 			return agent.ModelResolution{
-				Dialect: string(h.cfg.Dialect),
-				BaseURL: h.cfg.BaseURL,
-				Limits:  h.cfg.Limits,
-				Pricing: h.cfg.Pricing,
+				Dialect: string(h.next.dialect),
+				BaseURL: h.next.baseURL,
+				Limits:  h.next.limits,
+				Pricing: h.next.pricing,
 			}, nil
 		}
 		return agent.ModelResolution{}, fmt.Errorf("model %q is not in the loaded catalog", modelID)
 	}
-	if m.Unavailable != "" {
-		return agent.ModelResolution{}, fmt.Errorf("model %q is not usable: %s", modelID, m.Unavailable)
+	if err := m.Validate(); err != nil {
+		return agent.ModelResolution{}, fmt.Errorf("model %q: %w", modelID, err)
 	}
 	if effort != "" {
 		if err := validateModelThinkingEffort(effort, m); err != nil {
@@ -515,36 +524,51 @@ func (h *tuiHost) resolveAgentModel(modelID, effort string) (agent.ModelResoluti
 		Dialect: string(cfg.Dialect),
 		BaseURL: cfg.BaseURL,
 		Limits:  cfg.Limits,
-		Pricing: m.Pricing(h.catalogSource, h.catalogFetchedAt),
+		Pricing: catalogPrice(h.catalog, modelID),
 	}, nil
 }
 
 // TodoItems returns the checklist recorded by the active session log so the
 // TUI widget can show it before the next todo call and after a session switch.
 func (h *tuiHost) TodoItems() []tools.TodoItem {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return agent.RestoreTodo(h.store.Events())
+	return h.host.Todo()
+}
+
+// effectiveConfigLocked is the app configuration with the next-run selection
+// applied. It is what the details and settings views describe.
+func (h *tuiHost) effectiveConfigLocked() config {
+	cfg := h.cfg
+	cfg.Model = h.next.model
+	cfg.Dialect = h.next.dialect
+	cfg.BaseURL = h.next.baseURL
+	cfg.Limits = h.next.limits
+	cfg.MaxContextTokens = h.next.limits.MaxContextTokens
+	cfg.MaxOutputTokens = h.next.limits.MaxOutputTokens
+	cfg.InputLimit = h.next.limits.MaxInputTokens
+	cfg.Pricing = h.next.pricing
+	cfg.ThinkingEffort = h.next.effort
+	return cfg
 }
 
 func (h *tuiHost) Details() tui.Details {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	cfg := h.effectiveConfigLocked()
 	return tui.Details{
-		TracePath:        h.store.Path(),
-		StateDir:         h.cfg.StateDir,
-		BaseURL:          h.cfg.BaseURL,
-		Provider:         h.cfg.Provider,
-		PromptVersion:    h.cfg.PromptVersion,
-		ToolsetVersion:   h.cfg.ToolsetVersion,
-		HarnessVersion:   h.cfg.HarnessVersion,
-		MaxContextTokens: h.cfg.MaxContextTokens,
-		MaxOutputTokens:  h.cfg.MaxOutputTokens,
-		MaxOutputUnset:   h.cfg.MaxOutputTokens == 0,
-		SessionTimeout:   h.cfg.SessionTimeout,
-		ModelTimeout:     h.cfg.ModelTimeout,
-		HTTPTimeout:      h.cfg.HTTPTimeout,
-		ThinkingEffort:   h.cfg.ThinkingEffort,
+		TracePath:        h.host.Path(),
+		StateDir:         h.host.StateDir(),
+		BaseURL:          cfg.BaseURL,
+		Provider:         cfg.Provider,
+		PromptVersion:    cfg.PromptVersion,
+		ToolsetVersion:   cfg.ToolsetVersion,
+		HarnessVersion:   cfg.HarnessVersion,
+		MaxContextTokens: cfg.MaxContextTokens,
+		MaxOutputTokens:  cfg.MaxOutputTokens,
+		MaxOutputUnset:   !cfg.Limits.MaxOutputSet(),
+		SessionTimeout:   cfg.SessionTimeout,
+		ModelTimeout:     cfg.ModelTimeout,
+		HTTPTimeout:      cfg.HTTPTimeout,
+		ThinkingEffort:   cfg.ThinkingEffort,
 	}
 }
 
@@ -553,21 +577,23 @@ func (h *tuiHost) Details() tui.Details {
 // replaces the inherited value, and a value the effective catalog model does
 // not advertise is cleared with a warning. A model absent from the catalog
 // cannot be validated offline, so its recorded value is kept.
-func resolveRunThinkingEffort(cfg *config, catalog map[string]model.CatalogModel, modelName string, opts tui.RunOptions, warn func(string)) {
+func resolveRunThinkingEffort(sel *runSelection, catalog map[string]model.CatalogModel, modelName string, opts tui.RunOptions, warn func(string)) {
 	if opts.ThinkingEffortSet {
-		cfg.ThinkingEffort = opts.ThinkingEffort
+		sel.effort = opts.ThinkingEffort
 	}
-	if cfg.ThinkingEffort == "" {
+	if sel.effort == "" {
 		return
 	}
 	if m, ok := catalog[modelName]; ok {
-		clearInheritedThinkingEffort(cfg, m, warn)
+		sel.effort = clearedThinkingEffort(sel.effort, m, warn)
 	}
 }
 
 // Start launches one run and returns its handle. The app supplies the display
-// callback and steering channel; the host owns the goroutine and cleanup.
-func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan string, display func(agent.DisplayEvent) error) (tui.Run, error) {
+// callback and steering channel; the host owns the goroutine and cleanup. The
+// engine builds the registry, spawner, grant, todo seed, and work directories
+// from the session contract plus this run's selection.
+func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (tui.Run, error) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -577,36 +603,16 @@ func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan st
 		h.mu.Unlock()
 		return nil, errors.New("a run is already active")
 	}
-	definitions := h.agents
 	var warnings []string
 	warn := func(text string) { warnings = append(warnings, text) }
-	modelName, dialect, err := h.prepareRunLocked(opts, warn)
-	if err != nil {
+	if err := h.prepareRunLocked(opts, warn); err != nil {
 		h.mu.Unlock()
 		return nil, err
 	}
+	sel := h.next
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	control := newRunController(cancel)
-	workDir, tmpDir := workPaths(h.cfg.StateDir, h.sessionID)
-	if err := resetWorkDirs(workDir, tmpDir); err != nil {
-		cancel()
-		h.mu.Unlock()
-		return nil, err
-	}
-
-	rcfg := runnerConfig(h.cfg)
-	rcfg.Model = modelName
-	rcfg.Dialect = string(dialect)
-	rcfg.Workspace = h.info.Workspace
-	rcfg.Stream = true
-	rcfg.Interactive = false
-	rcfg.Controller = control
-	rcfg.Steering = steer
-	rcfg.Logger = nil
-	if display != nil {
-		rcfg.Display = display
-	}
 	forward := display
 	if forward != nil {
 		forward = func(ev agent.DisplayEvent) error {
@@ -618,32 +624,25 @@ func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan st
 			return display(ev)
 		}
 	}
-	spawner := agent.NewSpawner(agent.SpawnerOptions{
-		Config:      rcfg,
-		Workspace:   h.ws,
-		Definitions: definitions,
-		Resolve:     h.resolveAgentModel,
+	runner, spawner, err := h.host.BuildRunnerWithSpawner(engine.RunSpec{
+		Model:          sel.model,
+		Dialect:        string(sel.dialect),
+		BaseURL:        sel.baseURL,
+		Limits:         sel.limits,
+		Pricing:        sel.pricing,
+		ThinkingEffort: sel.effortOption(),
+		Stream:         true,
+		Interactive:    false,
 		NewCompleter: func(dialect model.Dialect, baseURL, sessionID string) model.Completer {
-			return newCompleterFor(dialect, h.cfg, sessionID)
+			return newCompleterFor(dialect, baseURL, h.cfg.Token, h.cfg.HTTPTimeout, acodeUserAgent(h.cfg.HarnessVersion), sessionID)
 		},
-		NewToolOptions: func(_, childWorkDir, childTmpDir string) tools.Options {
-			return toolOptions(h.cfg, childTmpDir, childWorkDir)
-		},
-		Display:       forward,
-		ParentSession: h.sessionID,
-		ParentSeq:     h.store.LastSeq,
-		MaxSubagents:  h.cfg.MaxSubagents,
-	})
-	registryOpts := toolOptions(h.cfg, tmpDir, workDir)
-	registryOpts.Spawning = spawner
-	registry := tools.NewRegistry(h.ws, registryOpts)
-	// A recorded grant is enforced twice: the projection omits ungranted
-	// schemas, and dispatch rejects an ungranted name without running it. This
-	// keeps a resumed batch session non-delegating and a resumed child on its
-	// own grant.
-	registry.SetGrant(sessionGrant(rcfg.Tools, rcfg.ToolsetVersion))
-	registry.SeedTodo(agent.RestoreTodo(h.store.Events()))
-	runner := agent.New(rcfg, newCompleterFor(dialect, h.cfg, h.sessionID), registry, h.store)
+		ResolveModel: h.resolveAgentModel,
+	}, forward, steer, control)
+	if err != nil {
+		cancel()
+		h.mu.Unlock()
+		return nil, err
+	}
 	run := &hostRun{
 		ctx:      runCtx,
 		cancel:   cancel,
@@ -654,7 +653,6 @@ func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan st
 	}
 	h.active = run
 	h.lastSpawner = spawner
-	resumedFrom := lastSeq(h.store.Events())
 	h.mu.Unlock()
 
 	if display != nil {
@@ -663,15 +661,14 @@ func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan st
 		}
 	}
 	go h.run(run, runner, agent.RunOptions{
-		Task:           sub.Text,
-		TaskSet:        true,
-		TaskFrom:       sub.Source,
-		ResumedFromSeq: resumedFrom,
-	}, workDir, modelName, dialect)
+		Task:     sub.Text,
+		TaskSet:  true,
+		TaskFrom: sub.Source,
+	}, sel)
 	return run, nil
 }
 
-func (h *tuiHost) run(run *hostRun, runner *agent.Runner, opts agent.RunOptions, workDir, modelName string, dialect model.Dialect) {
+func (h *tuiHost) run(run *hostRun, runner *agent.Runner, opts agent.RunOptions, sel runSelection) {
 	defer close(run.finished)
 	var result agent.Result
 	func() {
@@ -688,12 +685,11 @@ func (h *tuiHost) run(run *hostRun, runner *agent.Runner, opts agent.RunOptions,
 		if err != nil {
 			result.Err = errors.Join(result.Err, err)
 		}
-		if result.Status == "" {
-			result.Status = agent.StopInternalError
-		}
 	}()
-	removeWorkDir(workDir, io.Discard)
-	if err := h.store.Sync(); err != nil {
+	// The engine recreates the work tree on the next BuildRunner; a leftover
+	// tree is not a run failure, exactly as before.
+	_ = h.host.CleanupWork()
+	if err := h.host.Store().Sync(); err != nil {
 		result.Status = agent.StopInternalError
 		result.Err = errors.Join(result.Err, err)
 	}
@@ -707,8 +703,8 @@ func (h *tuiHost) run(run *hostRun, runner *agent.Runner, opts agent.RunOptions,
 	h.info.ContextTokens = result.ContextTokens
 	h.info.CostMicroUSD = result.CostMicroUSD
 	h.info.CostComplete = result.CostComplete
-	h.info.Model = modelName
-	h.info.Dialect = string(dialect)
+	h.info.Model = sel.model
+	h.info.Dialect = string(sel.dialect)
 	h.lastStatus = result.Status
 	h.lastReason = ""
 	if result.Err != nil {
@@ -721,7 +717,8 @@ func (h *tuiHost) run(run *hostRun, runner *agent.Runner, opts agent.RunOptions,
 }
 
 // Close terminates any active run, waits for its durable cleanup, then closes
-// the store and workspace.
+// the engine host, which syncs the log, releases the workspace, and removes the
+// work tree.
 func (h *tuiHost) Close() error {
 	h.mu.Lock()
 	h.closed = true
@@ -731,9 +728,10 @@ func (h *tuiHost) Close() error {
 		active.Terminate()
 		<-active.finished
 	}
-	storeErr := h.store.Close()
-	wsErr := h.ws.Close()
-	return errors.Join(storeErr, wsErr)
+	if h.host == nil {
+		return nil
+	}
+	return h.host.Close()
 }
 
 func (h *tuiHost) summary() (tui.Info, agent.StopReason, string) {
@@ -742,25 +740,74 @@ func (h *tuiHost) summary() (tui.Info, agent.StopReason, string) {
 	return h.info, h.lastStatus, h.lastReason
 }
 
+// tuiEngineSpec builds the engine construction input for the TUI. The identity,
+// tool options, and completer factory are supplied here; the per-run model
+// choice is a RunSpec. ModeNew carries the workspace instructions through
+// AppendPrompt so the engine folds, caps, records, and propagates them; resume
+// and fork replay what the session recorded.
+func tuiEngineSpec(cfg config, mode engine.Mode, sessionID, instructions string, definitions *agent.AgentCatalog) engine.Spec {
+	effort := cfg.ThinkingEffort
+	spec := engine.Spec{
+		Workspace:      cfg.Workspace,
+		StateDir:       cfg.StateDir,
+		Mode:           mode,
+		SessionID:      sessionID,
+		Identity:       acodeIdentity,
+		Provider:       cfg.Provider,
+		Dialect:        string(cfg.Dialect),
+		BaseURL:        cfg.BaseURL,
+		Model:          cfg.Model,
+		Limits:         cfg.Limits,
+		Pricing:        cfg.Pricing,
+		ThinkingEffort: &effort,
+		Agents:         cfg.Agents,
+		Agent:          cfg.Agent,
+		UserAgent:      acodeUserAgent(cfg.HarnessVersion),
+		ToolOptions:    toolOptions(cfg, "", ""),
+		PromptVersion:  cfg.PromptVersion,
+		ToolsetVersion: cfg.ToolsetVersion,
+		MaxTurns:       cfg.MaxTurns,
+		MaxTotalTokens: cfg.MaxTotalTokens,
+		MaxSubagents:   cfg.MaxSubagents,
+		RunTimeout:     cfg.SessionTimeout,
+		ModelTimeout:   cfg.ModelTimeout,
+		RequireUsage:   cfg.RequireUsage,
+		LogRequests:    cfg.LogRequests,
+		Version:        cfg.HarnessVersion,
+		NewCompleter: func(dialect model.Dialect, baseURL, sessionID string) model.Completer {
+			return newCompleterFor(dialect, baseURL, cfg.Token, cfg.HTTPTimeout, acodeUserAgent(cfg.HarnessVersion), sessionID)
+		},
+	}
+	if definitions != nil {
+		spec.Definitions = definitions.Agents
+	}
+	if mode == engine.ModeNew {
+		spec.AppendPrompt = instructions
+		spec.AppendPromptSet = instructions != ""
+	}
+	return spec
+}
+
 // openTUIHost opens the session shell used by the TUI and -ui-json. It
-// validates resume/fork state before the terminal is touched.
+// validates resume/fork state before the terminal is touched and performs the
+// app-owned policy before the engine validates and records the contract.
 func openTUIHost(cfg config, stderr io.Writer) (*tuiHost, int) {
-	var (
-		store         *session.Store
-		ws            *tools.Workspace
-		state         agent.State
-		catalogSource model.CatalogSource
-		code          int
-		startupWarn   []string
-	)
+	var startupWarn []string
 	warn := func(text string) { startupWarn = append(startupWarn, text) }
 
-	// Definitions are loaded once per process from the state directory. The
-	// recorded prompt and grant keep a resumed session's replay exact, so this
-	// catalog only affects new children and the /agents browser. Operator
-	// overrides are applied to a copy; the declared values stay available for
-	// the browser's provenance view.
-	baseDefinitions := agent.LoadAgents(cfg.StateDir)
+	// Definitions are loaded once per process: acode's five shipped roles as
+	// the base, then the operator's <state-dir>/agents/*.md files, which
+	// replace a shipped role by name. The recorded prompt and grant keep a
+	// resumed session's replay exact, so this catalog only affects new
+	// children and the /agents browser. Operator overrides are applied to a
+	// copy; the declared values stay available for the browser's provenance
+	// view.
+	defaults, defErr := defaultAgentDefinitions()
+	if defErr != nil {
+		_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(defErr.Error()))
+		return nil, exitConfig
+	}
+	baseDefinitions := agent.LoadAgents(defaults, cfg.StateDir)
 	definitions, overrideErr := agent.ApplyAgentOverrides(baseDefinitions, cfg.AgentOverrides)
 	if overrideErr != nil {
 		prefix := "acode: agent overrides: "
@@ -775,159 +822,60 @@ func openTUIHost(cfg config, stderr io.Writer) (*tuiHost, int) {
 	}
 	cfg.Agents = definitions.Infos()
 
-	fail := func(code int) (*tuiHost, int) {
-		if store != nil {
-			_ = store.Close()
-		}
-		if ws != nil {
-			_ = ws.Close()
-		}
-		return nil, code
-	}
-
+	ctx := context.Background()
+	var (
+		catalogSource model.CatalogSource
+		mode          engine.Mode
+		sessionID     string
+		instructions  string
+	)
 	switch {
 	case cfg.ResumeID != "":
-		if err := prepareStateDir(cfg.StateDir); err != nil {
+		source, code, err := tuiSessionPolicy(ctx, &cfg, cfg.ResumeID, warn)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
+			return nil, code
+		}
+		catalogSource, mode, sessionID = source, engine.ModeResume, cfg.ResumeID
+	case cfg.ForkID != "":
+		source, code, err := tuiSessionPolicy(ctx, &cfg, cfg.ForkID, warn)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
+			return nil, code
+		}
+		catalogSource, mode, sessionID = source, engine.ModeFork, cfg.ForkID
+	default:
+		source, err := newCatalogSource(cfg)
+		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
 			return nil, exitConfig
 		}
-		var err error
-		store, err = session.Open(cfg.StateDir, cfg.ResumeID)
-		if err != nil {
-			return nil, sessionFailure(err, stderr)
-		}
-		state, err = agent.Inspect(store.Events())
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: read session %s: %v\n", cfg.ResumeID, tui.SanitizeLine(err.Error()))
-			return fail(exitSetup)
-		}
-		source, err := sessionCatalogSource(cfg)
-		if err != nil {
+		if err := resolveNewModel(ctx, &cfg, source, stderr); err != nil {
 			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitConfig)
-		}
-		if err := applySessionDefaults(context.Background(), &cfg, state, source, warn); err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(catalogExitCode(err))
+			return nil, catalogExitCode(err)
 		}
 		catalogSource = source
-		ws, code = openSessionWorkspace(cfg, state, stderr)
-		if ws == nil {
-			return fail(code)
-		}
-		cfg.Workspace = ws.Dir()
-		if err := validateSessionRules(&cfg, state); err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitConfig)
-		}
-	case cfg.ForkID != "":
-		if err := prepareStateDir(cfg.StateDir); err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return nil, exitConfig
-		}
-		source, err := session.OpenShared(cfg.StateDir, cfg.ForkID)
-		if err != nil {
-			return nil, sessionFailure(err, stderr)
-		}
-		parentEvents := source.Events()
-		parentID := source.ID()
-		parentSeq := source.LastSeq()
-		state, err = agent.Inspect(parentEvents)
-		if err != nil {
-			_ = source.Close()
-			_, _ = fmt.Fprintf(stderr, "acode: read parent session %s: %v\n", cfg.ForkID, tui.SanitizeLine(err.Error()))
-			return nil, exitSetup
-		}
-		catSource, err := sessionCatalogSource(cfg)
-		if err != nil {
-			_ = source.Close()
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return nil, exitConfig
-		}
-		if err := applySessionDefaults(context.Background(), &cfg, state, catSource, warn); err != nil {
-			_ = source.Close()
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return nil, catalogExitCode(err)
-		}
-		catalogSource = catSource
-		ws, code = openSessionWorkspace(cfg, state, stderr)
-		if ws == nil {
-			_ = source.Close()
-			return nil, code
-		}
-		cfg.Workspace = ws.Dir()
-		if err := validateSessionRules(&cfg, state); err != nil {
-			_ = source.Close()
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitConfig)
-		}
-		sessionID := session.NewID()
-		store, err = session.Create(cfg.StateDir, sessionID)
-		if err != nil {
-			_ = source.Close()
-			_, _ = fmt.Fprintf(stderr, "acode: create forked session log: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitSetup)
-		}
-		rcfg := runnerConfig(cfg)
-		parent := &agent.ParentRef{Session: parentID, Seq: parentSeq}
-		if err := agent.WriteSessionStart(store, rcfg, parent); err != nil {
-			_ = source.Close()
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitSetup)
-		}
-		if err := store.CopyHistory(parentEvents); err != nil {
-			_ = source.Close()
-			_, _ = fmt.Fprintf(stderr, "acode: copy parent session: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitSetup)
-		}
-		if err := store.Sync(); err != nil {
-			_ = source.Close()
-			_, _ = fmt.Fprintf(stderr, "acode: sync forked session: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitSetup)
-		}
-		if err := source.Close(); err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: close parent session log: %v\n", tui.SanitizeLine(err.Error()))
-		}
-	default:
-		var err error
-		catalogSource, err = newCatalogSource(cfg)
+		instructions, err = newSessionWorkspaceText(cfg, warn)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
 			return nil, exitConfig
 		}
-		if err := resolveNewModel(context.Background(), &cfg, catalogSource, stderr); err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return nil, catalogExitCode(err)
-		}
-		ws, code = openWorkspace(cfg, stderr)
-		if ws == nil {
-			return nil, code
-		}
-		cfg.Workspace = ws.Dir()
-		if err := prepareStateDir(cfg.StateDir); err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitConfig)
-		}
-		sessionID := session.NewID()
-		store, err = session.Create(cfg.StateDir, sessionID)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: create session log: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitSetup)
-		}
-		if err := agent.WriteSessionStart(store, runnerConfig(cfg), nil); err != nil {
-			_, _ = fmt.Fprintf(stderr, "acode: %v\n", tui.SanitizeLine(err.Error()))
-			return fail(exitSetup)
-		}
+		mode = engine.ModeNew
 	}
 
-	history, err := agent.History(store.Events())
+	host, err := engine.Open(ctx, tuiEngineSpec(cfg, mode, sessionID, instructions, definitions))
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "acode: read session %s: %v\n", store.ID(), tui.SanitizeLine(err.Error()))
-		return fail(exitSetup)
+		return nil, engineFailure(err, stderr)
 	}
-	_ = history
-	info := sessionInfo(cfg, store, state)
-	ctx := context.Background()
+	resolved := host.Spec()
+	applyResolvedSpec(&cfg, resolved)
+	state, err := host.State()
+	if err != nil {
+		_ = host.Close()
+		_, _ = fmt.Fprintf(stderr, "acode: read session %s: %v\n", tui.SanitizeLine(host.ID()), tui.SanitizeLine(err.Error()))
+		return nil, exitSetup
+	}
+	info := sessionInfo(cfg, host, state)
 	if catalogSource == nil {
 		if src, err := newCatalogSource(cfg); err == nil {
 			catalogSource = src
@@ -939,11 +887,10 @@ func openTUIHost(cfg config, stderr io.Writer) (*tuiHost, int) {
 			loaded = &cat
 		}
 	}
-	host := &tuiHost{
+	th := &tuiHost{
+		host:           host,
 		cfg:            cfg,
-		store:          store,
-		ws:             ws,
-		sessionID:      store.ID(),
+		next:           selectionFromSpec(resolved),
 		source:         catalogSource,
 		agents:         definitions,
 		baseAgents:     baseDefinitions,
@@ -953,11 +900,11 @@ func openTUIHost(cfg config, stderr io.Writer) (*tuiHost, int) {
 	}
 	if loaded != nil {
 		warnCatalog(stderr, *loaded)
-		host.setCatalogLocked(*loaded)
+		th.setCatalogLocked(*loaded)
 	} else {
-		host.models = []tui.ModelChoice{host.recordedChoiceLocked(false)}
+		th.models = []tui.ModelChoice{th.recordedChoiceLocked(false)}
 	}
-	return host, 0
+	return th, 0
 }
 
 // executeTUI runs the interactive or headless TUI and returns the exit code.

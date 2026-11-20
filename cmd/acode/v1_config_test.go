@@ -5,12 +5,12 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/eddiectc/aharness/agent"
+	"github.com/eddiectc/aharness/engine"
 	"github.com/eddiectc/aharness/model"
 	"github.com/eddiectc/aharness/session"
 	"github.com/eddiectc/aharness/tools"
@@ -501,29 +501,26 @@ func TestValidateSessionRules(t *testing.T) {
 	}
 }
 
-func TestSessionFailureExitCodes(t *testing.T) {
+func TestEngineExitCodes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
 		want int
 	}{
-		{name: "missing", err: os.ErrNotExist, want: exitConfig},
-		{name: "locked", err: session.ErrLocked, want: exitConfig},
+		{name: "not found", err: engine.ErrSessionNotFound, want: exitConfig},
+		{name: "locked", err: engine.ErrSessionLocked, want: exitConfig},
+		{name: "invalid id", err: engine.ErrInvalidSessionID, want: exitConfig},
 		{name: "unsupported version", err: session.ErrUnsupportedVersion, want: exitConfig},
 		{name: "mode", err: session.ErrMode, want: exitConfig},
-		{name: "invalid id", err: session.ErrInvalidID, want: exitConfig},
+		{name: "config", err: &engine.ConfigError{Field: "Model", Detail: "is required"}, want: exitConfig},
 		{name: "corrupt", err: session.ErrCorrupt, want: exitSetup},
 		{name: "other", err: errors.New("disk failure"), want: exitSetup},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var stderr bytes.Buffer
-			if got := sessionFailure(tc.err, &stderr); got != tc.want {
-				t.Fatalf("sessionFailure(%v) = %d, want %d", tc.err, got, tc.want)
-			}
-			if stderr.Len() == 0 {
-				t.Fatal("sessionFailure wrote no diagnostic")
+			if got := engineExitCode(tc.err); got != tc.want {
+				t.Fatalf("engineExitCode(%v) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
 	}

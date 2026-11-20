@@ -34,7 +34,7 @@ func (h *blockingHost) Models() []ModelChoice                 { return nil }
 func (h *blockingHost) History() ([]agent.HistoryItem, error) { return nil, nil }
 func (h *blockingHost) Close() error                          { return nil }
 
-func (h *blockingHost) Start(sub Submission, opts RunOptions, steer <-chan string, display func(agent.DisplayEvent) error) (Run, error) {
+func (h *blockingHost) Start(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (Run, error) {
 	run := &blockingRun{done: make(chan agent.Result, 1), terminate: make(chan struct{})}
 	h.mu.Lock()
 	h.run = run

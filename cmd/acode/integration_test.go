@@ -41,13 +41,7 @@ func runHarnessEnv(t *testing.T, bin, workspace, stateDir, baseURL string, extra
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = workspace
-	env := make([]string, 0, len(os.Environ())+3+len(extraEnv))
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "ACODE_") {
-			continue
-		}
-		env = append(env, entry)
-	}
+	env := testEnvBase()
 	env = append(env, "ACODE_STATE_DIR="+stateDir)
 	if baseURL != "" {
 		env = append(env, "ACODE_PROVIDER_BASE_URL="+baseURL)
@@ -371,6 +365,11 @@ func TestBinaryRunsBothDialects(t *testing.T) {
 			if rs.Limits.MaxOutputTokens != 0 {
 				t.Errorf("run_start output = %d, want 0 (no harness cap)", rs.Limits.MaxOutputTokens)
 			}
+			// A fresh session starts from zero; the runner derives this from the
+			// log, so the host must not pass its own value.
+			if rs.ResumedFromSeq != 0 {
+				t.Errorf("run_start resumed_from_seq = %d, want 0 for a fresh session", rs.ResumedFromSeq)
+			}
 			f.mu.Lock()
 			bodies := append([][]byte(nil), f.bodies...)
 			f.mu.Unlock()
@@ -561,7 +560,7 @@ func TestSignalKillsChildAndCleansWorkDir(t *testing.T) {
 		"-max-context-tokens", "200000",
 	)
 	cmd.Dir = workspace
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(testEnvBase(),
 		"ACODE_PROVIDER_BASE_URL="+f.url,
 		"ACODE_PROVIDER_TOKEN=test-token",
 		"ACODE_STATE_DIR="+stateDir,

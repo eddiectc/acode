@@ -116,8 +116,8 @@ func runCatalogAction(cfg config, stdout, stderr io.Writer) int {
 	}
 	if cfg.ListModels {
 		for _, m := range cat.SortedModels() {
-			if m.Unavailable != "" {
-				warnf(stderr, "model %s is not usable: %s", m.ID, m.Unavailable)
+			if err := m.Validate(); err != nil {
+				warnf(stderr, "model %s: %v", m.ID, err)
 			}
 		}
 		writeCatalogList(stdout, usable)
@@ -214,14 +214,24 @@ func validateModelThinkingEffort(value string, m model.CatalogModel) error {
 		value, id, strings.Join(m.ReasoningEfforts, ", "))
 }
 
-// clearInheritedThinkingEffort applies the model-switch rule: an inherited
-// effort the new model does not advertise is cleared with a visible warning.
+// clearInheritedThinkingEffort applies the model-switch rule to the session
+// configuration: an inherited effort the new model does not advertise is
+// cleared with a visible warning.
 func clearInheritedThinkingEffort(cfg *config, m model.CatalogModel, warn func(string)) {
 	if cfg.ThinkingEffort == "" {
 		return
 	}
-	if m.SupportsEffort(cfg.ThinkingEffort) {
-		return
+	cfg.ThinkingEffort = clearedThinkingEffort(cfg.ThinkingEffort, m, warn)
+}
+
+// clearedThinkingEffort returns value when m advertises it, or the provider
+// default (the empty string) with a warning when it does not.
+func clearedThinkingEffort(value string, m model.CatalogModel, warn func(string)) string {
+	if value == "" {
+		return ""
+	}
+	if m.SupportsEffort(value) {
+		return value
 	}
 	reason := "does not advertise it"
 	switch {
@@ -230,22 +240,21 @@ func clearInheritedThinkingEffort(cfg *config, m model.CatalogModel, warn func(s
 	case len(m.ReasoningEfforts) == 0:
 		reason = "advertises no effort levels"
 	}
-	value := cfg.ThinkingEffort
-	cfg.ThinkingEffort = ""
 	if warn != nil {
 		warn(fmt.Sprintf("thinking effort %q cleared: model %s %s; using the provider default",
 			value, catalogField(m.ID, 256), reason))
 	}
+	return ""
 }
 
 // usableCatalogModel looks up id and rejects entries the harness cannot use.
 func usableCatalogModel(cat model.Catalog, id string) (model.CatalogModel, error) {
 	m, err := cat.Lookup(id)
 	if err != nil {
-		return model.CatalogModel{}, fmt.Errorf("%w: %q for provider %s", model.ErrModelNotFound, id, cat.Provider)
+		return model.CatalogModel{}, err
 	}
-	if m.Unavailable != "" {
-		return model.CatalogModel{}, fmt.Errorf("model %q is not usable: %s", id, catalogField(m.Unavailable, 512))
+	if err := m.Validate(); err != nil {
+		return model.CatalogModel{}, err
 	}
 	return m, nil
 }
@@ -254,11 +263,8 @@ func usableCatalogModel(cat model.Catalog, id string) (model.CatalogModel, error
 // configuration. An explicit context flag is clamped to the model window and
 // remains the value used when the TUI switches models again.
 func applyCatalogModel(cfg *config, m model.CatalogModel, warn func(string)) error {
-	if m.Dialect != model.DialectChat && m.Dialect != model.DialectResponses {
-		return fmt.Errorf("model %q has unsupported dialect %q", m.ID, m.Dialect)
-	}
-	if m.BaseURL == "" {
-		return fmt.Errorf("model %q has no provider base URL", m.ID)
+	if err := model.ValidateBaseURL(m.BaseURL); err != nil {
+		return fmt.Errorf("model %q has no usable provider base URL: %w", m.ID, err)
 	}
 	cfg.Model = m.ID
 	cfg.Dialect = m.Dialect
@@ -422,24 +428,12 @@ func applySessionDefaults(ctx context.Context, cfg *config, state agent.State, s
 	}
 	cfg.PromptVersion = state.PromptVersion
 	cfg.ToolsetVersion = state.ToolsetVersion
-	// The recorded prompt, agent, and grant are replay values: a resumed or
-	// forked session keeps exactly what it recorded, so an edited agent file
-	// never rewrites an existing prompt and a pre-change session cannot
-	// delegate.
-	cfg.SystemPrompt = state.SystemPrompt
+	// The recorded prompt, agent, grant, and host provenance are replay
+	// values the engine host owns: a resumed or forked session keeps exactly
+	// what it recorded, so an edited agent file never rewrites an existing
+	// prompt and a pre-change session cannot delegate.
 	cfg.Agent = state.Agent
-	cfg.Tools = cloneStrings(state.Tools)
 	return validateEffective(cfg)
-}
-
-// cloneStrings preserves the nil/non-nil grant distinction across CLI session
-// defaults. A nil grant means every tool of the recorded version; an explicit
-// empty grant means none.
-func cloneStrings(names []string) []string {
-	if names == nil {
-		return nil
-	}
-	return append([]string{}, names...)
 }
 
 // baseURLIsLoopback reports whether a resolved base URL points at a local

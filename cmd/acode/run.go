@@ -6,10 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/term"
@@ -140,11 +138,22 @@ func executeNew(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *s
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
 		return catalogExitCode(err)
 	}
-	if err := prepareStateDir(cfg.StateDir); err != nil {
+	// A new session is the only contract that discovers workspace
+	// instructions. Read once through an SDK handle, then let the engine fold,
+	// record, and propagate the text. Resume and fork replay what they recorded
+	// instead.
+	instructions, err := newSessionWorkspaceText(cfg, func(warning string) {
+		warnf(stderr, "%s", warning)
+	})
+	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
 		return exitConfig
 	}
-	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeNew, "", logger))
+	spec, err := batchEngineSpec(cfg, engine.ModeNew, "", instructions, nil, logger)
+	if err != nil {
+		return engineFailure(err, stderr)
+	}
+	host, err := engine.Open(context.Background(), spec)
 	if err != nil {
 		return engineFailure(err, stderr)
 	}
@@ -153,10 +162,6 @@ func executeNew(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *s
 }
 
 func executeResume(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *slog.Logger) int {
-	if err := prepareStateDir(cfg.StateDir); err != nil {
-		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
-		return exitConfig
-	}
 	snapshot, err := engine.Inspect(context.Background(), cfg.StateDir, cfg.ResumeID)
 	if err != nil {
 		return engineFailure(err, stderr)
@@ -181,7 +186,11 @@ func executeResume(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
 		return exitConfig
 	}
-	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeResume, cfg.ResumeID, logger))
+	spec, err := batchEngineSpec(cfg, engine.ModeResume, cfg.ResumeID, "", nil, logger)
+	if err != nil {
+		return engineFailure(err, stderr)
+	}
+	host, err := engine.Open(context.Background(), spec)
 	if err != nil {
 		return engineFailure(err, stderr)
 	}
@@ -190,10 +199,6 @@ func executeResume(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger
 }
 
 func executeFork(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *slog.Logger) int {
-	if err := prepareStateDir(cfg.StateDir); err != nil {
-		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
-		return exitConfig
-	}
 	snapshot, err := engine.Inspect(context.Background(), cfg.StateDir, cfg.ForkID)
 	if err != nil {
 		return engineFailure(err, stderr)
@@ -218,7 +223,11 @@ func executeFork(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
 		return exitConfig
 	}
-	host, err := engine.Open(context.Background(), batchEngineSpec(cfg, engine.ModeFork, cfg.ForkID, logger))
+	spec, err := batchEngineSpec(cfg, engine.ModeFork, cfg.ForkID, "", state.Tools, logger)
+	if err != nil {
+		return engineFailure(err, stderr)
+	}
+	host, err := engine.Open(context.Background(), spec)
 	if err != nil {
 		return engineFailure(err, stderr)
 	}
@@ -227,15 +236,19 @@ func executeFork(cfg config, stdin io.Reader, stdout, stderr io.Writer, logger *
 }
 
 // batchEngineSpec maps the resolved CLI configuration onto the shared engine
-// contract. Batch withholds delegate from execution without rewriting the
-// recorded session contract.
-func batchEngineSpec(cfg config, mode engine.Mode, sessionID string, logger *slog.Logger) engine.Spec {
+// contract. instructions is the new-session workspace text; the engine
+// composes and records it, and only ModeNew may carry it. A new or forked batch
+// session records the toolset's full grant and narrows only the root, so the
+// recorded contract stays complete while the session can never delegate.
+// recorded is the parent's recorded grant when forking, nil otherwise.
+func batchEngineSpec(cfg config, mode engine.Mode, sessionID, instructions string, recorded []string, logger *slog.Logger) (engine.Spec, error) {
 	effort := cfg.ThinkingEffort
 	spec := engine.Spec{
 		Workspace:      cfg.Workspace,
 		StateDir:       cfg.StateDir,
 		Mode:           mode,
 		SessionID:      sessionID,
+		Identity:       acodeIdentity,
 		Provider:       cfg.Provider,
 		Dialect:        string(cfg.Dialect),
 		BaseURL:        cfg.BaseURL,
@@ -245,6 +258,7 @@ func batchEngineSpec(cfg config, mode engine.Mode, sessionID string, logger *slo
 		ThinkingEffort: &effort,
 		Agents:         cfg.Agents,
 		Agent:          cfg.Agent,
+		UserAgent:      acodeUserAgent(cfg.HarnessVersion),
 		ToolOptions:    toolOptions(cfg, "", ""),
 		PromptVersion:  cfg.PromptVersion,
 		ToolsetVersion: cfg.ToolsetVersion,
@@ -257,23 +271,23 @@ func batchEngineSpec(cfg config, mode engine.Mode, sessionID string, logger *slo
 		Version:        cfg.HarnessVersion,
 		Logger:         logger,
 		NewCompleter: func(dialect model.Dialect, baseURL, sessionID string) model.Completer {
-			return newCompleterFor(dialect, cfg, sessionID)
+			return newCompleterFor(dialect, baseURL, cfg.Token, cfg.HTTPTimeout, acodeUserAgent(cfg.HarnessVersion), sessionID)
 		},
 	}
 	switch mode {
-	case engine.ModeResume:
-		spec.ExecutionGrant = batchTools(cfg)
-		spec.ExecutionGrantSet = true
 	case engine.ModeNew, engine.ModeFork:
-		spec.Grant = batchTools(cfg)
-		spec.GrantSet = true
+		root, err := batchRootGrant(recorded, toolsetVersionOf(cfg))
+		if err != nil {
+			return engine.Spec{}, fmt.Errorf("tool grant: %w", err)
+		}
+		spec.RootGrant = root
 		if mode == engine.ModeNew {
 			spec.CustomToolsSet = true
+			spec.AppendPrompt = instructions
+			spec.AppendPromptSet = instructions != ""
 		}
-		spec.ExecutionGrant = spec.Grant
-		spec.ExecutionGrantSet = true
 	}
-	return spec
+	return spec, nil
 }
 
 // executeEngineRun performs one batch run over an engine host.
@@ -317,15 +331,10 @@ func executeEngineRun(cfg config, host *engine.Host, stdin io.Reader, stdout, st
 		_ = host.Close()
 		return engineExitCode(err)
 	}
-	resumedFrom := host.Store().LastSeq()
-	if cfg.ResumeID == "" && cfg.ForkID == "" {
-		resumedFrom = 0
-	}
 	result, runErr := runner.Run(runCtx, agent.RunOptions{
-		Task:           cfg.Task,
-		TaskSet:        cfg.TaskSet,
-		TaskFrom:       cfg.TaskSource,
-		ResumedFromSeq: resumedFrom,
+		Task:     cfg.Task,
+		TaskSet:  cfg.TaskSet,
+		TaskFrom: cfg.TaskSource,
 	})
 	var sinkErr error
 	if sink != nil {
@@ -334,9 +343,6 @@ func executeEngineRun(cfg config, host *engine.Host, stdin io.Reader, stdout, st
 	closeErr := host.Close()
 
 	status := result.Status
-	if status == "" {
-		status = agent.StopInternalError
-	}
 	if runErr != nil {
 		_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(runErr.Error()))
 		if cfg.Token == "" && authFailureHint(runErr) {
@@ -399,154 +405,13 @@ func toolOptions(cfg config, tmpDir, workDir string) tools.Options {
 	}
 }
 
-// runnerConfig converts the CLI configuration into the runner's immutable
-// per-run configuration.
-func runnerConfig(cfg config) agent.Config {
-	return agent.Config{
-		Provider:       cfg.Provider,
-		Dialect:        string(cfg.Dialect),
-		Model:          cfg.Model,
-		BaseURL:        cfg.BaseURL,
-		Workspace:      cfg.Workspace,
-		StateDir:       cfg.StateDir,
-		PromptVersion:  cfg.PromptVersion,
-		ToolsetVersion: cfg.ToolsetVersion,
-		HarnessVersion: cfg.HarnessVersion,
-		MaxTurns:       cfg.MaxTurns,
-		MaxTotalTokens: cfg.MaxTotalTokens,
-		// A batch run records a grant without delegate: there is no Esc and no
-		// observer, so an unattended child could spend without anyone able to
-		// judge or stop it.
-		Tools:          batchTools(cfg),
-		SystemPrompt:   cfg.SystemPrompt,
-		Agent:          cfg.Agent,
-		Agents:         cfg.Agents,
-		Limits:         cfg.Limits,
-		SessionTimeout: cfg.SessionTimeout,
-		ModelTimeout:   cfg.ModelTimeout,
-		LogRequests:    cfg.LogRequests,
-		Stream:         cfg.Stream,
-		ThinkingEffort: cfg.ThinkingEffort,
-		RequireUsage:   cfg.RequireUsage,
-		Pricing:        cfg.Pricing,
+// toolsetVersionOf resolves the recorded toolset version, defaulting to the
+// current one.
+func toolsetVersionOf(cfg config) string {
+	if cfg.ToolsetVersion != "" {
+		return cfg.ToolsetVersion
 	}
-}
-
-// batchTools returns the recorded tool grant for this run. A batch session
-// with no recorded grant (a new session, or a TUI session resumed in batch)
-// excludes delegate; a resumed batch session keeps the grant it recorded.
-func batchTools(cfg config) []string {
-	if cfg.Tools != nil {
-		return cloneStrings(cfg.Tools)
-	}
-	if cfg.Mode != ModeBatch {
-		// A TUI session records no grant, which means every tool of its
-		// recorded version.
-		return nil
-	}
-	// The batch grant is computed from the recorded version, not the current
-	// one: a resumed or forked old session keeps its frozen schema set, so a
-	// current-only name must not appear in the grant.
-	version := cfg.ToolsetVersion
-	if version == "" {
-		version = tools.Version
-	}
-	schemas, err := tools.SchemasFor(version)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(schemas))
-	for _, schema := range schemas {
-		if schema.Name == "delegate" {
-			continue
-		}
-		names = append(names, schema.Name)
-	}
-	return names
-}
-
-// sessionGrant returns the tool-name allowlist the dispatcher enforces for a
-// TUI run. A recorded grant wins. Without one, the grant is every tool of the
-// recorded toolset version, so a session that recorded v0 or v1 cannot reach
-// delegate even through a hallucinated call; nil means no narrowing.
-func sessionGrant(recordedTools []string, toolsetVersion string) []string {
-	if recordedTools != nil {
-		return cloneStrings(recordedTools)
-	}
-	version := toolsetVersion
-	if version == "" {
-		version = tools.Version
-	}
-	schemas, err := tools.SchemasFor(version)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(schemas))
-	for _, schema := range schemas {
-		if schema.Name == "delegate" {
-			// The recorded version declares delegate, so the session is not
-			// narrowed at dispatch.
-			return nil
-		}
-		names = append(names, schema.Name)
-	}
-	return names
-}
-
-// openWorkspace opens the configured workspace for a new session.
-func openWorkspace(cfg config, stderr io.Writer) (*tools.Workspace, int) {
-	ws, err := tools.OpenWorkspace(cfg.Workspace)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "acode: open workspace %s: %v\n", cfg.Workspace, sanitizeText(err.Error()))
-		return nil, exitConfig
-	}
-	return ws, 0
-}
-
-// openSessionWorkspace opens the effective workspace for resume or fork and
-// requires it to match the workspace recorded in the session.
-func openSessionWorkspace(cfg config, state agent.State, stderr io.Writer) (*tools.Workspace, int) {
-	ws, err := tools.OpenWorkspace(cfg.Workspace)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "acode: open workspace %s: %v\n", cfg.Workspace, sanitizeText(err.Error()))
-		return nil, exitConfig
-	}
-	if ws.Dir() != state.Workspace {
-		_ = ws.Close()
-		_, _ = fmt.Fprintf(stderr, "acode: workspace %s does not match the session workspace %s\n",
-			sanitizeText(ws.Dir()), sanitizeText(state.Workspace))
-		return nil, exitConfig
-	}
-	return ws, 0
-}
-
-// sessionFailure maps a session open/validate failure to the CLI exit code.
-func sessionFailure(err error, stderr io.Writer) int {
-	_, _ = fmt.Fprintf(stderr, "acode: %v\n", sanitizeText(err.Error()))
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return exitConfig
-	case errors.Is(err, session.ErrInvalidID),
-		errors.Is(err, session.ErrLocked),
-		errors.Is(err, session.ErrUnsupportedVersion),
-		errors.Is(err, session.ErrMode):
-		return exitConfig
-	default:
-		return exitSetup
-	}
-}
-
-// newCompleterFor builds the adapter for one run's dialect. The model picker
-// changes only the dialect/adapter for the next run; the request carries the
-// selected model.
-func newCompleterFor(dialect model.Dialect, cfg config, sessionID string) model.Completer {
-	userAgent := acodeUserAgent(cfg.HarnessVersion)
-	if dialect == model.DialectResponses {
-		return model.NewOpenAIResponses(cfg.BaseURL, cfg.Token, sessionID, cfg.HarnessVersion, cfg.HTTPTimeout).
-			WithUserAgent(userAgent)
-	}
-	return model.NewOpenAIChat(cfg.BaseURL, cfg.Token, sessionID, cfg.HarnessVersion, cfg.HTTPTimeout).
-		WithUserAgent(userAgent)
+	return tools.Version
 }
 
 // acodeUserAgent identifies this coding agent to provider and catalog
@@ -576,152 +441,8 @@ func configState(path string) string {
 	return path
 }
 
-// authFailureHint reports whether err is a provider 401, which is actionable
-// as a missing or invalid ACODE_PROVIDER_TOKEN.
+// authFailureHint reports whether err is a provider authentication failure,
+// which is actionable as a missing or invalid ACODE_PROVIDER_TOKEN.
 func authFailureHint(err error) bool {
-	var httpErr *model.HTTPError
-	return errors.As(err, &httpErr) && httpErr.StatusCode == 401
-}
-
-// prepareStateDir creates the state directory with mode 0700 and verifies that
-// the harness can write to it. It runs before any session state is created.
-func prepareStateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create state directory %s: %w", dir, err)
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("stat state directory %s: %w", dir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("state path %s is not a directory", dir)
-	}
-	if err := checkWritable(dir); err != nil {
-		return fmt.Errorf("state directory %s is not writable: %w", dir, err)
-	}
-	return nil
-}
-
-func checkWritable(dir string) error {
-	f, err := os.CreateTemp(dir, ".acode-preflight-*")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	_, writeErr := f.Write([]byte("acode\n"))
-	closeErr := f.Close()
-	removeErr := os.Remove(name)
-	if writeErr != nil {
-		return writeErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return removeErr
-}
-
-// workPaths returns the per-session work directory and the harness-owned TMPDIR
-// the child receives. HOME is deliberately not redirected; see commandEnv.
-func workPaths(stateDir, sessionID string) (workDir, tmpDir string) {
-	workDir = filepath.Join(stateDir, "work", sessionID)
-	return workDir, filepath.Join(workDir, "tmp")
-}
-
-// resetWorkDirs removes any stale per-session work tree and recreates the
-// harness-owned TMPDIR. A failure to clear it is a startup failure, not a
-// silent reuse.
-func resetWorkDirs(workDir, tmpDir string) error {
-	if err := removeTree(workDir); err != nil {
-		return fmt.Errorf("clear work directory %s: %w", workDir, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(workDir), 0o700); err != nil {
-		return fmt.Errorf("create work directory %s: %w", filepath.Dir(workDir), err)
-	}
-	if err := os.Mkdir(workDir, 0o700); err != nil {
-		return fmt.Errorf("create work directory %s: %w", workDir, err)
-	}
-	if err := os.Chmod(workDir, 0o700); err != nil {
-		return fmt.Errorf("set work directory mode %s: %w", workDir, err)
-	}
-	if err := os.Mkdir(tmpDir, 0o700); err != nil {
-		return fmt.Errorf("create work directory %s: %w", tmpDir, err)
-	}
-	if err := os.Chmod(tmpDir, 0o700); err != nil {
-		return fmt.Errorf("set work directory mode %s: %w", tmpDir, err)
-	}
-	return nil
-}
-
-// removeWorkDir removes the per-session work tree best-effort. A failure is
-// reported with the leftover path and never changes the terminal status.
-func removeWorkDir(dir string, stderr io.Writer) {
-	if err := removeTree(dir); err != nil {
-		_, _ = fmt.Fprintf(stderr, "acode: cleanup leftover work directory %s: %v\n", dir, sanitizeText(err.Error()))
-	}
-}
-
-// removeTree removes dir and its contents, including trees a child command left
-// without owner write permission on some directories. os.RemoveAll cannot unlink
-// entries from a directory it may not write to, so a module cache or an
-// extracted archive in the harness-owned TMPDIR (created read-only by the tool
-// that produced it) would otherwise make every later run fail to start. Removal
-// retries once after restoring owner access on every directory in the tree.
-func removeTree(dir string) error {
-	err := os.RemoveAll(dir)
-	if err == nil || !errors.Is(err, fs.ErrPermission) {
-		return err
-	}
-	if chmodErr := restoreOwnerAccess(dir); chmodErr != nil {
-		return errors.Join(err, chmodErr)
-	}
-	return os.RemoveAll(dir)
-}
-
-// restoreOwnerAccess adds owner read, write, and search permission to dir and
-// every directory beneath it so removal can unlink their entries. It never
-// follows a symlink and skips entries that disappeared.
-func restoreOwnerAccess(dir string) error {
-	info, err := os.Lstat(dir)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	case err != nil:
-		return err
-	}
-	if !info.IsDir() {
-		// RemoveAll unlinks a non-directory from its parent, so the entry's own
-		// mode cannot block removal.
-		return nil
-	}
-	if err := os.Chmod(dir, info.Mode().Perm()|0o700); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		// ReadDir reports a symlink as a non-directory, so this never follows
-		// one out of the tree.
-		if !entry.IsDir() {
-			continue
-		}
-		if err := restoreOwnerAccess(filepath.Join(dir, entry.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func lastSeq(events []session.Event) uint64 {
-	if len(events) == 0 {
-		return 0
-	}
-	return events[len(events)-1].Seq
+	return errors.Is(err, model.ErrAuth)
 }

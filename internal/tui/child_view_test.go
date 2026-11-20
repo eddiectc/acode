@@ -61,8 +61,12 @@ func TestAgentHubEnterFocusesChildAndSteers(t *testing.T) {
 		t.Fatalf("child view does not show the queued delegation steer:\n%s", view)
 	}
 
-	// The child records the line at its next turn boundary; the view drops the
-	// queued copy and labels the recorded source as a delegation steer.
+	// The child records the line at its next turn boundary; the acknowledgement
+	// by ID drops the queued copy and the view labels the recorded source as a
+	// delegation steer.
+	if host.steered[0].id == 0 {
+		t.Fatalf("child steering has no ID: %+v", host.steered[0])
+	}
 	updated := append(childHistory(),
 		agent.HistoryItem{Kind: agent.HistoryUser, Run: 1, Source: agent.SourceSubagentSteer, Text: "focus on the parser"},
 		agent.HistoryItem{Kind: agent.HistoryAssistant, Run: 1, Text: "Looking at the parser now."},
@@ -70,6 +74,10 @@ func TestAgentHubEnterFocusesChildAndSteers(t *testing.T) {
 	host.mu.Lock()
 	host.childHistory["child-1"] = updated
 	host.mu.Unlock()
+	deliver(app, agent.SubagentMessageRecorded{
+		CallID: "call-1", Index: 0, Agent: "explore", Session: "child-1",
+		ID: host.steered[0].id, Source: agent.SourceSubagentSteer, Text: "focus on the parser",
+	})
 	deliver(app, agent.SubagentProgress{
 		CallID: "call-1", Index: 0, Agent: "explore", Session: "child-1",
 		ChildTurns: 2, ContextTokens: 4000,

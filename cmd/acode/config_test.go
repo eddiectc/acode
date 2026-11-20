@@ -17,7 +17,26 @@ import (
 	"github.com/eddiectc/aharness/model"
 )
 
+// cfgTestGetenv turns a test env map into the getenv parseConfig expects.
+// HOME defaults to the poisoned test home, so a test that forgets to isolate
+// the state dir cannot read the operator's real ~/.acode: a parse that
+// consults HOME fails on the unreadable config there instead of silently
+// ingesting the operator's settings. A test that sets HOME explicitly
+// overrides the default, matching a child process that carries its own env.
 func cfgTestGetenv(values map[string]string) func(string) string {
+	if _, ok := values["HOME"]; !ok {
+		home := testHome()
+		if values == nil {
+			values = map[string]string{"HOME": home}
+		} else {
+			copied := make(map[string]string, len(values)+1)
+			for key, value := range values {
+				copied[key] = value
+			}
+			copied["HOME"] = home
+			values = copied
+		}
+	}
 	return func(key string) string { return values[key] }
 }
 
@@ -670,10 +689,17 @@ func TestConfigTerminalActions(t *testing.T) {
 	})
 
 	t.Run("failed terminal action errors do not block parse", func(t *testing.T) {
-		// -provider is still validated even for terminal actions.
-		err := cfgTestParseErr(t, []string{"-refresh-models", "-provider", "other"}, nil)
+		// -provider is still validated even for terminal actions. The env
+		// carries the isolated state dir and cfgTestGetenv's poisoned HOME
+		// default: the parse reaches the flag error, and if the state-dir
+		// isolation ever regresses it fails on the unreadable config instead
+		// of reporting the operator's ~/.acode error or silently ingesting
+		// the operator's settings.
+		err := cfgTestParseErr(t, []string{"-refresh-models", "-provider", "other"}, map[string]string{
+			"ACODE_STATE_DIR": stateDir,
+		})
 		if !strings.Contains(err.Error(), "unsupported provider") {
-			t.Fatalf("error = %q", err)
+			t.Fatalf("error = %q, want the flag error: the operator config leaked into the parse", err)
 		}
 	})
 }
@@ -740,6 +766,25 @@ func TestConfigStateDirResolution(t *testing.T) {
 		want := filepath.Join(home, ".acode")
 		if cfg.StateDir != want {
 			t.Errorf("StateDir = %q, want %q", cfg.StateDir, want)
+		}
+	})
+
+	t.Run("default env is isolated from the operator", func(t *testing.T) {
+		// cfgTestGetenv's HOME default pins this seam: a parse that sets no
+		// state dir and no HOME resolves into the poisoned test home, not the
+		// operator's real ~/.acode. The config there is unreadable, so the
+		// parse fails loudly — before any test can silently ingest the
+		// operator's settings. If the default is ever dropped, this fails
+		// with the operator's own error (or succeeds against their config).
+		cfg, err := parseConfig(common, cfgTestGetenv(nil), io.Discard)
+		if err == nil {
+			t.Fatalf("parseConfig succeeded with the default HOME: %+v", cfg)
+		}
+		if !strings.Contains(err.Error(), filepath.Join(testHome(), ".acode", "config.json")) {
+			t.Fatalf("error = %q, want the poisoned test-home config error", err)
+		}
+		if filepath.IsAbs(testHome()) && !strings.Contains(testHome(), "acode-test-home") {
+			t.Fatalf("test home = %q, want the poisoned test home", testHome())
 		}
 	})
 

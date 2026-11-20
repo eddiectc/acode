@@ -116,8 +116,9 @@ Deliberately **not** configurable in the file:
 Every key is validated even when a higher layer wins, so a broken file is
 reported instead of hiding behind a flag.
 
-The agent directory is derived, not configured. Definitions live in
-`<state-dir>/agents/*.md`; there is no `-agents-dir` flag, environment
+The agent directory is derived, not configured. Operator definitions live in
+`<state-dir>/agents/*.md`, replacing a role shipped with acode by exact name;
+there is no `-agents-dir` flag, environment
 variable, or config key. The state directory is already the harness-owned,
 operator-scoped location, and a workspace-level agent directory would be
 repository-controlled prompt material with no trust model. Moving the state
@@ -166,10 +167,10 @@ An override must satisfy the shape rules: at most 32 entries, a 64-byte
 effort, and a positive `max_turns`. A shape violation is a config error (exit
 2) naming the agent and key on every invocation. The discovered-name check runs
 when the TUI loads the catalog, because that is where definitions exist; batch
-mode records no `delegate` grant and does not load them, so it validates only
-the shape. Model existence and effort support are resolved when a child starts,
-so an unknown or unusable model is a per-task `invalid_args` report rather than
-a process exit; the catalog may be unavailable offline.
+mode loads no definitions and records a root grant without `delegate`, so it
+validates only the shape. Model existence and effort support are resolved when
+a child starts, so an unknown or unusable model is a per-task `invalid_args`
+report rather than a process exit; the catalog may be unavailable offline.
 
 Overrides apply to the next process. The process keeps the catalog it loaded at
 startup, so a saved setting changes neither a child in flight nor a new run

@@ -106,13 +106,7 @@ func TestSubagentEndToEnd(t *testing.T) {
 		"-provider-base-url", provider.url,
 		"-max-turns", "5")
 	cmd.Dir = workspace
-	env := make([]string, 0, len(os.Environ())+3)
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "ACODE_") {
-			continue
-		}
-		env = append(env, entry)
-	}
+	env := testEnvBase()
 	env = append(env,
 		"ACODE_STATE_DIR="+stateDir,
 		"ACODE_PROVIDER_TOKEN=test-token",
@@ -181,8 +175,8 @@ func TestSubagentEndToEnd(t *testing.T) {
 	if strings.Join(childStart.Tools, ",") != "read_file,search" {
 		t.Fatalf("child grant = %v", childStart.Tools)
 	}
-	if !strings.Contains(childStart.SystemPrompt, "explore") {
-		t.Fatalf("child prompt = %q", childStart.SystemPrompt)
+	if !strings.Contains(childStart.SystemPrompt, `You are the acode "explore" agent`) {
+		t.Fatalf("child prompt = %q, want the acode identity line", childStart.SystemPrompt)
 	}
 	final := 0
 	for _, ev := range childEvents {
@@ -210,6 +204,21 @@ func TestSubagentEndToEnd(t *testing.T) {
 
 	// The parent records one result and folds the child's accounting.
 	parentEvents := readSessionEvents(t, parentPath)
+	var parentStart struct {
+		SystemPrompt string `json:"system_prompt"`
+	}
+	if err := json.Unmarshal(parentEvents[0].Data, &parentStart); err != nil {
+		t.Fatalf("decode parent session_start: %v", err)
+	}
+	if !strings.Contains(parentStart.SystemPrompt, "You are acode, a coding harness working in the workspace") {
+		t.Fatalf("parent prompt = %q, want the acode identity line", parentStart.SystemPrompt)
+	}
+	if !strings.Contains(parentStart.SystemPrompt, "- reviewer: Independent review of a change its author has read and believes correct.") {
+		t.Fatalf("parent prompt = %q, want the shipped reviewer description in the catalog", parentStart.SystemPrompt)
+	}
+	if !strings.Contains(parentStart.SystemPrompt, "Run the relevant tests before reporting the change done") {
+		t.Fatalf("parent prompt = %q, want the prompt-v3 verify/report rule", parentStart.SystemPrompt)
+	}
 	var (
 		foundResult   bool
 		details       tools.DelegateDetails
@@ -331,13 +340,7 @@ func TestSubagentReadOnlyFanOutEndToEnd(t *testing.T) {
 		"-provider-base-url", provider.url,
 		"-max-turns", "5")
 	cmd.Dir = workspace
-	env := make([]string, 0, len(os.Environ())+3)
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "ACODE_") {
-			continue
-		}
-		env = append(env, entry)
-	}
+	env := testEnvBase()
 	env = append(env,
 		"ACODE_STATE_DIR="+stateDir,
 		"ACODE_PROVIDER_TOKEN=test-token",
@@ -689,15 +692,73 @@ func TestBatchCannotDelegate(t *testing.T) {
 	if err != nil || len(files) != 1 {
 		t.Fatalf("session logs = %v (%v), want one", files, err)
 	}
-	// The recorded grant stays on the batch session.
+	// The recorded root grant stays on the batch session; the session grant
+	// remains full so a later TUI resume can still sound out the contract.
 	events := readSessionEvents(t, files[0])
 	var start struct {
-		Tools []string `json:"tools"`
+		Tools     []string `json:"tools"`
+		RootTools []string `json:"root_tools"`
 	}
 	if err := json.Unmarshal(events[0].Data, &start); err != nil {
 		t.Fatalf("decode session_start: %v", err)
 	}
-	if len(start.Tools) == 0 || contains(start.Tools, "delegate") {
-		t.Fatalf("batch grant = %v, want a recorded list without delegate", start.Tools)
+	if start.Tools != nil {
+		t.Fatalf("batch session grant = %v, want the full toolset (unset)", start.Tools)
+	}
+	if len(start.RootTools) == 0 || contains(start.RootTools, "delegate") {
+		t.Fatalf("batch root grant = %v, want a recorded list without delegate", start.RootTools)
+	}
+}
+
+// TestTUIResumeOfBatchSessionCannotDelegate is the grant-split contract: a
+// batch-created session records a full session grant and a root grant without
+// delegate, and the TUI honours the root grant through the engine-built
+// registry. Without root_tools on resume, this run could dispatch a child.
+func TestTUIResumeOfBatchSessionCannotDelegate(t *testing.T) {
+	t.Parallel()
+	bin := buildHarness(t)
+	workspace := t.TempDir()
+	stateDir := t.TempDir()
+	batchProvider := newFakeProvider(t, func(w http.ResponseWriter, r *http.Request, call int, body []byte) {
+		writeJSON(w, 200, chatFinalResponse("batch done"))
+	})
+	first := runHarness(t, bin, workspace, stateDir, batchProvider.url,
+		"-batch", "-task", "seed the contract", "-model", "deepseek-v4.1-flash")
+	if first.exit != 0 {
+		t.Fatalf("batch exit = %d\nstderr:\n%s", first.exit, first.stderr)
+	}
+
+	tuiProvider := newFakeProvider(t, func(w http.ResponseWriter, r *http.Request, call int, body []byte) {
+		switch call {
+		case 1:
+			writeJSON(w, 200, chatDelegateResponse("call_tui",
+				`{"intent":"delegate the read","tasks":[{"agent":"explore","task":"read hello.txt"}]}`))
+		case 2:
+			writeJSON(w, 200, chatFinalResponse("done without delegating"))
+		default:
+			writeJSON(w, 500, map[string]any{"error": "unexpected model call"})
+		}
+	})
+	script := strings.Join([]string{
+		`{"v":1,"type":"text","text":"try to delegate"}`,
+		`{"v":1,"type":"key","key":"enter"}`,
+		`{"v":1,"type":"wait","until":"idle","timeout_ms":20000}`,
+		`{"v":1,"type":"quit"}`,
+	}, "\n") + "\n"
+	_, stderr, exit := runHarnessRaw(t, bin, workspace, stateDir, tuiProvider.url, strings.NewReader(script),
+		"-ui-json", "-resume", first.id, "-max-output-tokens", "1000", "-max-context-tokens", "200000")
+	if exit != 0 {
+		t.Fatalf("tui resume exit = %d\nstderr:\n%s", exit, stderr)
+	}
+	data, err := os.ReadFile(sessionPathFor(stateDir, first.id))
+	if err != nil {
+		t.Fatalf("read session log: %v", err)
+	}
+	log := string(data)
+	if strings.Count(log, `"type":"session_start"`) != 1 {
+		t.Fatalf("a child session was created by the resumed TUI run:\n%s", log)
+	}
+	if !strings.Contains(log, `"name":"delegate"`) || !strings.Contains(log, `"code":"unknown_tool"`) {
+		t.Fatalf("the recorded root grant did not withhold delegate:\n%s", log)
 	}
 }

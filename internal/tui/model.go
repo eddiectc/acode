@@ -92,7 +92,7 @@ type transcriptItem struct {
 	pending   bool
 	running   bool
 	ok        bool
-	code      string
+	code      tools.Code
 	output    string
 	errText   string
 	exitCode  int
@@ -116,19 +116,25 @@ type frameQueryReply struct {
 }
 
 type steerEntry struct {
+	id    uint64
 	text  string
 	item  *transcriptItem
 	acked bool
 }
 
 type liveRun struct {
-	active        bool
-	handle        Run
-	number        int
+	active bool
+	handle Run
+	number int
+	// runID is the SDK's per-run identifier from RunStarted. It is the stale
+	// event key: a numeric channel tag alone cannot tell two runs apart once
+	// the host reuses a slot.
+	runID         string
 	model         string
 	dialect       string
 	state         UIState
 	turn          int
+	attempt       int
 	turns         int
 	contextTokens int
 	started       time.Time
@@ -139,7 +145,6 @@ type liveRun struct {
 	finished      bool
 	closed        bool
 	draining      bool
-	eventsClosed  bool
 	readPending   bool
 	doneResult    *agent.Result
 	events        chan agent.DisplayEvent
@@ -196,7 +201,8 @@ type App struct {
 	run         liveRun
 	nextRun     int
 	steer       []steerEntry
-	steerCh     chan string
+	steerCh     chan agent.SteeringLine
+	steerNextID uint64
 	nextModel   string
 	nextDialect model.Dialect
 	nextEffort  string
@@ -330,7 +336,7 @@ func (m *App) loadHistory(items []agent.HistoryItem) {
 			name:      h.Name,
 			pending:   h.Pending,
 			ok:        h.OK,
-			code:      h.Code,
+			code:      tools.Code(h.Code),
 			output:    h.Output,
 			errText:   h.Error,
 			exitCode:  h.ExitCode,
@@ -348,13 +354,13 @@ func (m *App) loadHistory(items []agent.HistoryItem) {
 			it.args = SanitizeLine(string(h.Arguments))
 			it.intent = toolIntent(h.Arguments)
 		}
-		if h.Name == "delegate" {
+		if h.Name == tools.NameDelegate {
 			if details, ok := tools.ParseDelegateDetails(h.Details); ok {
 				it.delegate = &details
 			}
 		}
 		if it.kind == itemNotice {
-			it.noticeKind = agent.NoticeWarning
+			it.noticeKind = h.NoticeKind
 		}
 		m.addItem(it)
 		if it.kind == itemRun {
@@ -574,9 +580,11 @@ func (m *App) submitSteering(text string) tea.Cmd {
 	}
 	it := &transcriptItem{kind: itemUser, run: m.run.number, source: "steer", text: text, queued: true}
 	m.addItem(it)
+	m.steerNextID++
+	line := agent.SteeringLine{ID: m.steerNextID, Text: text}
 	select {
-	case ch <- text:
-		m.steer = append(m.steer, steerEntry{text: text, item: it})
+	case ch <- line:
+		m.steer = append(m.steer, steerEntry{id: line.ID, text: text, item: it})
 		m.follow = true
 		m.notice = "steering queued"
 	default:

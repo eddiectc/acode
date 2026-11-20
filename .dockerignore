@@ -1,0 +1,19 @@
+# Build context for the acode image.
+#
+# Keep this list narrow: the image needs go.mod, go.sum, cmd/, and internal/
+# only. Do not exclude Markdown wholesale with a recursive pattern —
+# cmd/acode/agents/*.md is compiled into the binary through //go:embed and a
+# missing file breaks the build.
+.git
+.github
+.golangci.yml
+.issues
+bin
+docs
+scripts
+
+# Root-level prose and local editor state are not inputs to the build.
+*.md
+*.out
+*.test
+coverage.*

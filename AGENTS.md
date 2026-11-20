@@ -15,7 +15,10 @@ host composition, modes, and exit codes are in
 [docs/configuration.md](docs/configuration.md); the TUI and protocol are in
 [docs/tui.md](docs/tui.md) and [docs/commands.md](docs/commands.md); caps live
 in [docs/limits.md](docs/limits.md); the testing strategy is in
-[docs/testing-strategy.md](docs/testing-strategy.md). Every change verifies
+[docs/testing-strategy.md](docs/testing-strategy.md); the container image and
+the branch, commit, and release process are in
+[docs/container.md](docs/container.md) and [docs/release.md](docs/release.md).
+Every change verifies
 against [docs/definition-of-done.md](docs/definition-of-done.md). The
 [documentation map](docs/README.md) explains where reference, plans, and
 research live.
@@ -29,6 +32,11 @@ Non-negotiables:
   framework, or a UUID/JSON Schema/retry library.
 - `cmd/acode` is wiring and I/O only. `internal/tui` is display-only. Do not
   implement a loop, projection, tool, provider adapter, or session schema here.
+- Never work around aharness. The SDK is owned by the same author and open to
+  suggestions, so a missing capability, wrong contract, or awkward API is fixed
+  there, not here. Propose the change upstream; do not add app-side shims,
+  patches, vendored copies, `replace` forks, or duplicated contract logic to
+  compensate for the SDK.
 - Pin the aharness dependency to a tagged release in `go.mod`.
 - User-visible branding is acode: the `acode` binary, `ACODE_*` environment
   variables, `~/.acode` state, the user agent, temp names, and docs. Do not add

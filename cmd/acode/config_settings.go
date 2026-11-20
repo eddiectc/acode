@@ -86,7 +86,7 @@ func configSettingDefs() []configSettingDef {
 // and the layer that supplied it. It never returns the web fetch key.
 func (h *tuiHost) Settings() tui.SettingsView {
 	h.mu.Lock()
-	cfg := h.cfg
+	cfg := h.effectiveConfigLocked()
 	h.mu.Unlock()
 	return settingsView(cfg)
 }

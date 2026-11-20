@@ -907,7 +907,8 @@ func TestStatusLineTracksALiveRun(t *testing.T) {
 	// written when a run finishes.
 	deliver(app, agent.ResponseCompleted{
 		Turn: 5, Text: "working", FinishReason: model.FinishToolCalls,
-		Usage: model.Usage{InputTokens: 30_000, OutputTokens: 500, Reported: true},
+		Usage:           model.Usage{InputTokens: 30_000, OutputTokens: 500, Reported: true},
+		CumulativeTurns: 5, ContextTokens: 30_500,
 	})
 	line := app.statusLine()
 	if !strings.Contains(line, "turns 5") {
@@ -920,7 +921,8 @@ func TestStatusLineTracksALiveRun(t *testing.T) {
 	// A second response moves both counters again, before the run ends.
 	deliver(app, agent.ResponseCompleted{
 		Turn: 6, Text: "done", FinishReason: model.FinishStop,
-		Usage: model.Usage{InputTokens: 42_000, OutputTokens: 700, Reported: true},
+		Usage:           model.Usage{InputTokens: 42_000, OutputTokens: 700, Reported: true},
+		CumulativeTurns: 6, ContextTokens: 42_700,
 	})
 	line = app.statusLine()
 	if !strings.Contains(line, "turns 6") || !strings.Contains(line, "ctx 42.7k/200.0k") {
@@ -952,6 +954,8 @@ func TestStatusLineKeepsOccupancyWithoutReportedUsage(t *testing.T) {
 	startTestRun(t, app, "unreported usage")
 	deliver(app, agent.ResponseCompleted{
 		Turn: 1, Text: "no usage", FinishReason: model.FinishStop,
+		// A response that reported no usage keeps the previous occupancy.
+		CumulativeTurns: 1, ContextTokens: 9_000,
 	})
 	if line := app.statusLine(); !strings.Contains(line, "ctx 9.0k/200.0k") {
 		t.Fatalf("status = %q, want the last known occupancy kept", line)

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	jsonv2 "encoding/json/v2"
 	"fmt"
 	"slices"
 	"strconv"
@@ -639,7 +638,10 @@ func (a *agentsOverlay) commitEdit() {
 		return
 	}
 	value := strings.TrimSpace(a.editBuf)
-	next := cloneAgentOverride(row.Override)
+	var next agent.AgentOverride
+	if row.Override != nil {
+		next = row.Override.Clone()
+	}
 	switch a.editKey {
 	case "model":
 		if value == "" {
@@ -691,7 +693,7 @@ func (a *agentsOverlay) toggleEnabled() {
 		a.notice = "agent settings are read-only in this host"
 		return
 	}
-	next := cloneAgentOverride(row.Override)
+	next := row.Override.Clone()
 	enabled := !row.Enabled
 	next.Enabled = &enabled
 	if err := a.settings.SetAgentOverride(row.Name, next); err != nil {
@@ -722,32 +724,6 @@ func (a *agentsOverlay) resetOverrides() {
 	}
 	a.notice = "overrides cleared; applies to the next process"
 	a.refresh()
-}
-
-// cloneAgentOverride deep-copies the persisted override so an edit cannot
-// mutate the view or a previously saved pointer.
-func cloneAgentOverride(o *agent.AgentOverride) agent.AgentOverride {
-	if o == nil {
-		return agent.AgentOverride{}
-	}
-	out := *o
-	if o.Model != nil {
-		value := *o.Model
-		out.Model = &value
-	}
-	if o.ThinkingEffort != nil {
-		value := *o.ThinkingEffort
-		out.ThinkingEffort = &value
-	}
-	if o.MaxTurns != nil {
-		value := *o.MaxTurns
-		out.MaxTurns = &value
-	}
-	if o.Enabled != nil {
-		value := *o.Enabled
-		out.Enabled = &value
-	}
-	return out
 }
 
 // agentSettingLabel is the human name used in prompts and notices.
@@ -1020,21 +996,15 @@ type SubagentTaskLine struct {
 // subagentTasksFromArgs extracts the requested tasks from one delegate call so
 // tool_started can describe what is about to run.
 func subagentTasksFromArgs(raw json.RawMessage) []SubagentTaskLine {
-	var args struct {
-		Tasks []struct {
-			Agent   string `json:"agent"`
-			Task    string `json:"task"`
-			Session string `json:"session"`
-		} `json:"tasks"`
-	}
-	if err := jsonv2.Unmarshal(raw, &args); err != nil {
+	args, err := tools.ParseDelegateArgs(raw)
+	if err != nil {
 		return nil
 	}
 	out := make([]SubagentTaskLine, 0, len(args.Tasks))
 	for _, task := range args.Tasks {
 		out = append(out, SubagentTaskLine{
 			Agent:   SanitizeLine(task.Agent),
-			Intent:  CapText(SanitizeLine(intentLine(task.Task)), hubIntentBytes),
+			Intent:  CapText(SanitizeLine(tools.IntentLine(task.Task)), hubIntentBytes),
 			Session: SanitizeLine(task.Session),
 		})
 	}
@@ -1068,15 +1038,4 @@ func subagentTasksFromDetails(details *tools.DelegateDetails) []SubagentTaskLine
 		out = append(out, line)
 	}
 	return out
-}
-
-// intentLine is the first non-empty line of a task prompt, whitespace
-// collapsed. It mirrors the roster intent the spawner derives.
-func intentLine(task string) string {
-	for line := range strings.SplitSeq(task, "\n") {
-		if collapsed := strings.Join(strings.Fields(line), " "); collapsed != "" {
-			return collapsed
-		}
-	}
-	return ""
 }

@@ -7,6 +7,13 @@ import (
 	"runtime/debug"
 )
 
+// version is stamped into the binary by a release build, for example
+// -ldflags "-X main.version=v1.2.3". The linker writes it once; nothing
+// assigns it at runtime, and an empty value falls back to the module version.
+// A container image build excludes .git, so it has no VCS metadata to derive
+// a version from and must stamp one.
+var version string
+
 // buildInfo is the subset of runtime/debug build metadata the CLI reports.
 type buildInfo struct {
 	Version     string
@@ -16,18 +23,29 @@ type buildInfo struct {
 	HasVCS      bool
 }
 
+// stampedVersion resolves the reported version. An explicit build stamp wins
+// over the module version, and a build with neither reports devel.
+func stampedVersion(linkVersion, moduleVersion string) string {
+	if linkVersion != "" {
+		return linkVersion
+	}
+	if moduleVersion != "" {
+		return moduleVersion
+	}
+	return "devel"
+}
+
 func readBuildInfo() buildInfo {
-	info := buildInfo{Version: "devel", GoVersion: runtime.Version()}
+	info := buildInfo{GoVersion: runtime.Version()}
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
+		info.Version = stampedVersion(version, "")
 		return info
 	}
 	if bi.GoVersion != "" {
 		info.GoVersion = bi.GoVersion
 	}
-	if bi.Main.Version != "" {
-		info.Version = bi.Main.Version
-	}
+	info.Version = stampedVersion(version, bi.Main.Version)
 	for _, setting := range bi.Settings {
 		switch setting.Key {
 		case "vcs.revision":

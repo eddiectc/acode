@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/eddiectc/aharness/agent"
+	"github.com/eddiectc/aharness/engine"
+	"github.com/eddiectc/aharness/model"
 	"github.com/eddiectc/aharness/session"
 	"github.com/eddiectc/aharness/tools"
 )
@@ -56,51 +58,88 @@ func TestMaxSubagentsConfigFile(t *testing.T) {
 	}
 }
 
-func TestBatchGrantExcludesDelegate(t *testing.T) {
+func TestBatchRootGrantExcludesDelegate(t *testing.T) {
 	t.Parallel()
-	grant := batchTools(config{Mode: ModeBatch, ToolsetVersion: tools.Version})
-	if slices.Contains(grant, "delegate") {
-		t.Fatalf("batch grant includes delegate: %v", grant)
+	root, err := batchRootGrant(nil, tools.Version)
+	if err != nil {
+		t.Fatalf("batchRootGrant: %v", err)
 	}
-	if len(grant) != len(tools.NamesWithout("delegate")) {
-		t.Fatalf("batch grant = %v, want every current tool except delegate", grant)
+	if slices.Contains(root, tools.NameDelegate) {
+		t.Fatalf("batch root grant includes delegate: %v", root)
 	}
-
-	if got := batchTools(config{Mode: ModeTUI, ToolsetVersion: tools.Version}); got != nil {
-		t.Fatalf("tui grant = %v, want nil (all tools of the version)", got)
+	if len(root) != len(tools.NamesWithout(tools.NameDelegate)) {
+		t.Fatalf("batch root grant = %v, want every current tool except delegate", root)
 	}
 
 	// A resumed old session keeps its frozen schema set; a current-only name
-	// must not leak into its grant.
-	old := batchTools(config{Mode: ModeBatch, ToolsetVersion: "toolset-v0"})
-	if len(old) != 4 || slices.Contains(old, "web_search") || slices.Contains(old, "delegate") {
-		t.Fatalf("toolset-v0 batch grant = %v", old)
+	// must not leak into its root grant.
+	old, err := batchRootGrant(nil, "toolset-v0")
+	if err != nil {
+		t.Fatalf("batchRootGrant(toolset-v0): %v", err)
+	}
+	if len(old) != 4 || slices.Contains(old, "web_search") || slices.Contains(old, tools.NameDelegate) {
+		t.Fatalf("toolset-v0 batch root grant = %v", old)
 	}
 
-	recorded := batchTools(config{Mode: ModeBatch, ToolsetVersion: tools.Version, Tools: []string{"read_file"}})
-	if len(recorded) != 1 || recorded[0] != "read_file" {
-		t.Fatalf("recorded batch grant = %v, want the recorded list", recorded)
+	recorded, err := batchRootGrant([]string{tools.NameReadFile}, tools.Version)
+	if err != nil {
+		t.Fatalf("batchRootGrant(recorded): %v", err)
+	}
+	if len(recorded) != 1 || recorded[0] != tools.NameReadFile {
+		t.Fatalf("recorded batch root grant = %v, want the recorded list", recorded)
+	}
+
+	// An explicit empty recorded grant stays a non-nil empty root grant.
+	none, err := batchRootGrant([]string{}, tools.Version)
+	if err != nil {
+		t.Fatalf("batchRootGrant(empty): %v", err)
+	}
+	if none == nil || len(none) != 0 {
+		t.Fatalf("empty recorded grant = %v, want a non-nil empty grant", none)
 	}
 }
 
-func TestRunnerConfigRecordsTheAgentContract(t *testing.T) {
+// TestTUISessionSpecCarriesTheContract pins the engine inputs the TUI supplies:
+// identity, user agent, definitions, and the per-run subagent cap. The per-run
+// model is a RunSpec, so it is checked at the Start path instead.
+func TestTUISessionSpecCarriesTheContract(t *testing.T) {
 	t.Parallel()
+	definitions := agent.LoadAgents(testDefaultDefinitions(t), t.TempDir())
 	cfg := config{
-		Provider: "opencode-go", Model: "m", Dialect: "openai-chat",
-		PromptVersion: agent.PromptVersion, ToolsetVersion: tools.Version,
-		SystemPrompt: "child prompt", Agent: "explore", Tools: []string{"read_file"},
-		Agents:   []agent.AgentInfo{{Name: "explore", Description: "explore"}},
-		MaxTurns: 4,
+		Provider:         providerName,
+		Model:            "m",
+		Dialect:          model.DialectChat,
+		BaseURL:          "https://example.invalid/v1",
+		Workspace:        t.TempDir(),
+		StateDir:         t.TempDir(),
+		PromptVersion:    agent.PromptVersion,
+		ToolsetVersion:   tools.Version,
+		HarnessVersion:   "test",
+		MaxSubagents:     3,
+		MaxContextTokens: 200_000,
+		Agents:           definitions.Infos(),
 	}
-	rcfg := runnerConfig(cfg)
-	if rcfg.SystemPrompt != "child prompt" || rcfg.Agent != "explore" {
-		t.Fatalf("run config = %+v", rcfg)
+	if err := validateEffective(&cfg); err != nil {
+		t.Fatalf("validate effective: %v", err)
 	}
-	if len(rcfg.Tools) != 1 || rcfg.Tools[0] != "read_file" {
-		t.Fatalf("run config grant = %v", rcfg.Tools)
+	spec := tuiEngineSpec(cfg, engine.ModeNew, "", "", definitions)
+	if spec.Identity != acodeIdentity {
+		t.Fatalf("identity = %q, want %q", spec.Identity, acodeIdentity)
 	}
-	if len(rcfg.Agents) != 1 || rcfg.Agents[0].Name != "explore" {
-		t.Fatalf("run config catalog = %v", rcfg.Agents)
+	if spec.UserAgent != acodeUserAgent("test") || spec.ToolOptions.UserAgent != spec.UserAgent {
+		t.Fatalf("user agents = %q/%q", spec.UserAgent, spec.ToolOptions.UserAgent)
+	}
+	if spec.MaxSubagents != 3 {
+		t.Fatalf("max subagents = %d, want 3", spec.MaxSubagents)
+	}
+	if len(spec.Definitions) != len(definitions.Agents) || len(spec.Definitions) == 0 {
+		t.Fatalf("definitions = %d, want the loaded catalog", len(spec.Definitions))
+	}
+	if spec.AppendPromptSet {
+		t.Fatal("an empty workspace text must not set AppendPrompt")
+	}
+	if spec.NewCompleter == nil {
+		t.Fatal("engine spec has no completer factory")
 	}
 }
 
@@ -111,15 +150,16 @@ func TestResumePickerExcludesChildren(t *testing.T) {
 	parent := createTestSession(t, stateDir, workspace, "model-a", "", "parent task")
 
 	cfg := testSessionConfig(t, stateDir, workspace, "model-a")
-	cfg.Agent = "explore"
-	cfg.Tools = []string{"read_file"}
+	rcfg := testRunnerConfig(cfg)
+	rcfg.Agent = "explore"
+	rcfg.Tools = []string{"read_file"}
 	child := session.NewID()
 	store, err := session.Create(stateDir, child)
 	if err != nil {
 		t.Fatalf("create child session: %v", err)
 	}
 	parentRef := &agent.ParentRef{Session: parent, Seq: 1, CallID: "call-1"}
-	if err := agent.WriteSessionStart(store, runnerConfig(cfg), parentRef); err != nil {
+	if err := agent.WriteSessionStart(store, rcfg, parentRef); err != nil {
 		_ = store.Close()
 		t.Fatalf("write child session start: %v", err)
 	}
@@ -142,27 +182,5 @@ func TestResumePickerExcludesChildren(t *testing.T) {
 	}
 	if state.ParentSession != parent || state.ParentCallID != "call-1" || state.Agent != "explore" {
 		t.Fatalf("child state = %+v", state)
-	}
-}
-
-func TestSessionGrantNarrowsPreDelegateSessions(t *testing.T) {
-	t.Parallel()
-	// A recorded grant always wins.
-	if got := sessionGrant([]string{"read_file"}, tools.Version); len(got) != 1 || got[0] != "read_file" {
-		t.Fatalf("recorded grant = %v", got)
-	}
-	// A toolset that declares delegate needs no narrowing.
-	if got := sessionGrant(nil, tools.Version); got != nil {
-		t.Fatalf("current toolset grant = %v, want nil (no narrowing)", got)
-	}
-	// An older toolset cannot reach delegate at dispatch.
-	for _, version := range []string{"toolset-v0", "toolset-v1"} {
-		grant := sessionGrant(nil, version)
-		if len(grant) == 0 || slices.Contains(grant, "delegate") {
-			t.Fatalf("%s grant = %v, want the version's tools without delegate", version, grant)
-		}
-		if version == "toolset-v0" && !slices.Contains(grant, "read_file") {
-			t.Fatalf("toolset-v0 grant = %v", grant)
-		}
 	}
 }

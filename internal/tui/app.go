@@ -42,20 +42,12 @@ const (
 	OverlaySettings OverlayKind = "settings"
 )
 
-// ModelChoice is one catalog-backed model in the picker. Switchable is false
-// only for the offline recorded-model fallback, which cannot be applied as a
-// new selection until the catalog loads.
+// ModelChoice is one picker row. The catalog metadata is the SDK's; Switchable
+// is the app's rule that the offline recorded-model fallback stays visible but
+// cannot replace the current model.
 type ModelChoice struct {
-	ID               string
-	Name             string
-	Dialect          model.Dialect
-	ContextWindow    int
-	InputLimit       int
-	OutputLimit      int
-	Status           string // "", "alpha", "beta", or "deprecated"
-	Translated       bool
-	Switchable       bool
-	ReasoningEfforts []string
+	model.CatalogModel
+	Switchable bool
 }
 
 // ModelRefresher is an optional Host capability for the model picker's
@@ -126,7 +118,7 @@ type Host interface {
 	Info() Info
 	Models() []ModelChoice
 	History() ([]agent.HistoryItem, error)
-	Start(sub Submission, opts RunOptions, steer <-chan string, display func(agent.DisplayEvent) error) (Run, error)
+	Start(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (Run, error)
 	Close() error
 }
 
@@ -301,7 +293,7 @@ type SettingsEditor interface {
 // could not be queued; SubagentHistory reads that child's display transcript.
 // Both are keyed by the child session ID announced in SubagentStarted.
 type SubagentFocus interface {
-	SteerSubagent(sessionID, text string) error
+	SteerSubagent(sessionID string, line agent.SteeringLine) error
 	SubagentHistory(sessionID string) ([]agent.HistoryItem, error)
 }
 
@@ -503,6 +495,14 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m, nil
 	case syncMsg:
+		// -ui-json only: the driver asks for a frame flush. Bubble Tea exposes
+		// no renderer-complete barrier, and the emulator is written from the
+		// renderer's own goroutine, so a short settle is the only reliable way
+		// to let the frame land before the driver reads the screen. Only the
+		// headless driver installs the ack channel this answers.
+		if m.acks == nil {
+			return m, nil
+		}
 		id := msg.id
 		return m, func() tea.Msg {
 			time.Sleep(headlessSettle)
@@ -541,11 +541,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.run.readPending = false
-		cmd := m.handleDisplay(msg.ev)
-		if m.run.draining {
-			return m, m.waitDisplayCmd()
-		}
-		return m, cmd
+		return m, m.handleDisplay(msg.ev)
 	case displayClosedMsg:
 		m.run.readPending = false
 		if m.run.draining {
@@ -1022,7 +1018,7 @@ func (m *App) startRun(text, source string) tea.Cmd {
 	m.historyIndex = len(m.inputHistory)
 
 	events := make(chan agent.DisplayEvent, 256)
-	steer := make(chan string, 64)
+	steer := make(chan agent.SteeringLine, 64)
 	stop := make(chan struct{})
 	display := func(ev agent.DisplayEvent) error {
 		select {
@@ -1078,12 +1074,47 @@ func (m *App) waitDisplayCmd() tea.Cmd {
 	}
 	m.run.readPending = true
 	runNo := m.run.number
+	stop := m.run.stop
 	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
+		if stop == nil {
+			// A run without a stop channel is only the fake-host test path; a
+			// real run always has one so the host can abort a blocked read.
+			return displayEventMsg{run: runNo, ev: <-ch}
+		}
+		select {
+		case ev := <-ch:
+			return displayEventMsg{run: runNo, ev: ev}
+		case <-stop:
+			// The runner has returned. Stop and a buffered event can both be
+			// ready, and select picks at random, so take one more event before
+			// declaring the run drained. The deferred drain continues from
+			// here; an empty buffer is the only proof there is nothing left.
+			select {
+			case ev := <-ch:
+				return displayEventMsg{run: runNo, ev: ev}
+			default:
+				return displayClosedMsg{}
+			}
+		}
+	}
+}
+
+// drainDisplayCmd reads only what is already buffered. It is used after the
+// run returns, when no producer remains: the display channel is never closed,
+// so an empty buffer is the only proof that the run is fully drained.
+func (m *App) drainDisplayCmd() tea.Cmd {
+	ch := m.run.events
+	if ch == nil {
+		return func() tea.Msg { return displayClosedMsg{} }
+	}
+	runNo := m.run.number
+	return func() tea.Msg {
+		select {
+		case ev := <-ch:
+			return displayEventMsg{run: runNo, ev: ev}
+		default:
 			return displayClosedMsg{}
 		}
-		return displayEventMsg{run: runNo, ev: ev}
 	}
 }
 
@@ -1099,10 +1130,14 @@ func (m *App) waitDoneCmd(run Run) tea.Cmd {
 
 func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 	if ev == nil {
-		return m.waitDisplayCmd()
+		return m.nextDisplayCmd()
 	}
 	switch ev := ev.(type) {
 	case agent.RunStarted:
+		if m.staleRun(ev.RunID) {
+			return m.nextDisplayCmd()
+		}
+		m.run.runID = ev.RunID
 		m.run.model = ev.Model
 		m.run.dialect = ev.Dialect
 		m.nextEffort = ev.ThinkingEffort
@@ -1124,11 +1159,14 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		}
 	case agent.ModelStarted:
 		m.run.state = StateRunning
-		m.run.turn = ev.Turn
 		// A retry or a new turn starts a fresh attempt: settle any thinking
-		// block left open by an interrupted call so later deltas cannot append
-		// to a stale block.
-		if m.run.thinking != nil {
+		// block left open by the interrupted call so later deltas cannot
+		// append to a stale block. A repeated start for the same turn and
+		// attempt is not a new attempt and leaves an open block alone.
+		freshAttempt := ev.Turn != m.run.turn || ev.Attempt != m.run.attempt
+		m.run.turn = ev.Turn
+		m.run.attempt = ev.Attempt
+		if freshAttempt && m.run.thinking != nil {
 			m.run.thinking.thinking = false
 			m.run.thinking.invalidateLines()
 			m.run.thinking = nil
@@ -1136,7 +1174,7 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		}
 	case agent.ReasoningDelta:
 		if ev.Text == "" {
-			return m.waitDisplayCmd()
+			return m.nextDisplayCmd()
 		}
 		m.run.state = StateStreaming
 		if m.run.thinking == nil {
@@ -1146,15 +1184,15 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		m.run.thinking.invalidateLines()
 		m.dirty = true
 		if m.coalesceScheduled {
-			return m.waitDisplayCmd()
+			return m.nextDisplayCmd()
 		}
 		m.coalesceScheduled = true
-		return tea.Batch(m.waitDisplayCmd(), tea.Tick(coalesceDelay, func(time.Time) tea.Msg {
+		return tea.Batch(m.nextDisplayCmd(), tea.Tick(coalesceDelay, func(time.Time) tea.Msg {
 			return coalesceMsg{}
 		}))
 	case agent.TextDelta:
 		if ev.Text == "" {
-			return m.waitDisplayCmd()
+			return m.nextDisplayCmd()
 		}
 		m.run.state = StateStreaming
 		// Assistant text means thinking is over; settle the block header.
@@ -1170,19 +1208,18 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		m.run.streamed.renderedSet = false
 		m.run.streamed.invalidateLines()
 		if m.coalesceScheduled {
-			return m.waitDisplayCmd()
+			return m.nextDisplayCmd()
 		}
 		m.coalesceScheduled = true
-		return tea.Batch(m.waitDisplayCmd(), tea.Tick(coalesceDelay, func(time.Time) tea.Msg {
+		return tea.Batch(m.nextDisplayCmd(), tea.Tick(coalesceDelay, func(time.Time) tea.Msg {
 			return coalesceMsg{}
 		}))
 	case agent.ResponseCompleted:
 		m.run.state = StateRunning
-		m.run.turns++
-		// A response that reported no usage keeps the last known occupancy.
-		if total := ev.Usage.Total(); total > 0 {
-			m.run.contextTokens = total
-		}
+		// The event carries the same cumulative figures the session state and
+		// result expose, so the live header cannot drift from the terminal one.
+		m.run.turns = ev.CumulativeTurns
+		m.run.contextTokens = ev.ContextTokens
 		m.dirty = true
 		text := CapText(Sanitize(ev.Text), maxTranscriptItemText)
 		streamed := m.run.streamed
@@ -1279,7 +1316,7 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		m.dirty = true
 		it.running = false
 		it.ok = ev.OK
-		it.code = string(ev.Code)
+		it.code = ev.Code
 		it.output = CapText(Sanitize(ev.Output), maxTranscriptItemText)
 		it.errText = CapText(Sanitize(ev.Error), maxTranscriptItemText)
 		it.exitCode = ev.ExitCode
@@ -1292,7 +1329,7 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 				m.setTodos(items)
 			}
 		}
-		if ev.Name == "delegate" {
+		if ev.Name == tools.NameDelegate {
 			if details, ok := tools.ParseDelegateDetails(ev.Details); ok {
 				it.delegate = &details
 			}
@@ -1305,7 +1342,7 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 			CallID:        it.callID,
 			Name:          it.name,
 			OK:            it.ok,
-			Code:          it.code,
+			Code:          string(it.code),
 			ExitCode:      it.exitCode,
 			Truncated:     it.truncated,
 			TimedOut:      it.timedOut,
@@ -1326,6 +1363,12 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		}
 		m.refreshChildFocus(ev.Session)
 		m.ensureContent()
+	case agent.SubagentMessageRecorded:
+		if f := m.childFocus; f != nil && f.session == ev.Session {
+			f.ackPending(ev.ID)
+			m.rebuildChildFocus()
+			m.ensureContent()
+		}
 	case agent.MessageRecorded:
 		m.ackMessage(ev)
 	case agent.Notice:
@@ -1337,8 +1380,26 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		m.dirty = true
 		m.ensureContent()
 	case agent.RunFinished:
-		m.applyResult(ev.Result, ev.Reason, ev.Duration, true)
-		return nil
+		if m.staleRun(ev.RunID) {
+			return m.nextDisplayCmd()
+		}
+		m.applyResult(ev.Result)
+		return m.nextDisplayCmd()
+	}
+	return m.nextDisplayCmd()
+}
+
+// staleRun reports whether an event belongs to a previous run. An empty ID is
+// accepted: older SDK events and the fake test host may omit it.
+func (m *App) staleRun(id string) bool {
+	return id != "" && m.run.runID != "" && id != m.run.runID
+}
+
+// nextDisplayCmd continues reading display events: blocking while the run is
+// live, non-blocking while the run is draining after the runner returned.
+func (m *App) nextDisplayCmd() tea.Cmd {
+	if m.run.draining {
+		return m.drainDisplayCmd()
 	}
 	return m.waitDisplayCmd()
 }
@@ -1349,17 +1410,18 @@ func (m *App) handleRunDone(result agent.Result) tea.Cmd {
 	if m.run.events == nil {
 		return m.completeRun()
 	}
-	if !m.run.eventsClosed {
-		// The runner has returned, so closing the channel cannot race a send.
-		// One read is kept in flight at all times; buffered events are handled
-		// in order before the closed channel completes the run.
-		close(m.run.events)
-		m.run.eventsClosed = true
+	if m.run.stop != nil {
+		// The runner has returned, so no display event can follow. Releasing
+		// the stop channel wakes a blocked read; the channel itself stays
+		// open, because the host owns its lifetime and only buffered events
+		// remain.
+		close(m.run.stop)
+		m.run.stop = nil
 	}
 	if m.run.readPending {
 		return nil
 	}
-	return m.waitDisplayCmd()
+	return m.drainDisplayCmd()
 }
 
 // completeRun finalizes a run after all display events and the run result have
@@ -1373,7 +1435,7 @@ func (m *App) completeRun() tea.Cmd {
 	m.run.closed = true
 	m.run.readPending = false
 	if !m.run.finished && m.run.doneResult != nil {
-		m.applyResult(*m.run.doneResult, "", 0, false)
+		m.applyResult(*m.run.doneResult)
 	}
 	m.run.active = false
 	m.run.handle = nil
@@ -1390,19 +1452,15 @@ func (m *App) finishQuit() tea.Cmd {
 
 // applyResult records a terminal run status once and updates the session
 // counters shown in the header.
-func (m *App) applyResult(result agent.Result, reason string, duration time.Duration, fromDisplay bool) {
-	_ = fromDisplay
+func (m *App) applyResult(result agent.Result) {
 	if m.run.finished {
 		return
 	}
 	status := result.Status
-	if status == "" {
-		status = agent.StopInternalError
-	}
 	if header := m.runItem(); header != nil {
 		header.status = status
-		header.reason = SanitizeLine(reason)
-		header.duration = duration
+		header.reason = SanitizeLine(result.Reason)
+		header.duration = result.Duration
 		header.turns = result.RunTurns
 		header.usage = result.RunUsage
 		header.invalidateLines()
@@ -1467,7 +1525,7 @@ func (m *App) applyResult(result agent.Result, reason string, duration time.Dura
 		}
 		m.emit(EventRunFinished{
 			Status:          status,
-			Reason:          SanitizeLine(reason),
+			Reason:          SanitizeLine(result.Reason),
 			RunTurns:        result.RunTurns,
 			RunUsage:        result.RunUsage,
 			RunCostMicroUSD: runCost,
@@ -1492,17 +1550,18 @@ func (m *App) ackMessage(ev agent.MessageRecorded) {
 	switch ev.Source {
 	case "steer":
 		for i := range m.steer {
-			if !m.steer[i].acked && m.steer[i].text == text {
-				m.steer[i].acked = true
-				if m.steer[i].item != nil {
-					m.steer[i].item.queued = false
-					m.steer[i].item.acked = true
-					m.steer[i].item.invalidateLines()
-					m.dirty = true
-				}
-				m.notice = "steering sent"
-				return
+			if m.steer[i].acked || (ev.ID != 0 && m.steer[i].id != ev.ID) {
+				continue
 			}
+			m.steer[i].acked = true
+			if m.steer[i].item != nil {
+				m.steer[i].item.queued = false
+				m.steer[i].item.acked = true
+				m.steer[i].item.invalidateLines()
+				m.dirty = true
+			}
+			m.notice = "steering sent"
+			return
 		}
 		m.addItem(&transcriptItem{kind: itemUser, run: m.run.number, source: "steer", text: text, acked: true})
 		m.dirty = true

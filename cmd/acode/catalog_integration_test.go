@@ -37,6 +37,13 @@ type recordedSessionStart struct {
 	SessionTimeoutMS int64          `json:"session_timeout_ms"`
 	ModelTimeoutMS   int64          `json:"model_timeout_ms"`
 	ThinkingEffort   string         `json:"thinking_effort"`
+	PromptVersion    string         `json:"prompt_version"`
+	ToolsetVersion   string         `json:"toolset_version"`
+	SystemPrompt     string         `json:"system_prompt"`
+	AppendedPrompt   string         `json:"appended_prompt"`
+	Agent            string         `json:"agent"`
+	Tools            []string       `json:"tools"`
+	RootTools        []string       `json:"root_tools"`
 }
 
 type recordedRunStart struct {
@@ -50,6 +57,7 @@ type recordedRunStart struct {
 	SessionTimeoutMS int64          `json:"session_timeout_ms"`
 	ModelTimeoutMS   int64          `json:"model_timeout_ms"`
 	ThinkingEffort   string         `json:"thinking_effort"`
+	ResumedFromSeq   uint64         `json:"resumed_from_seq"`
 }
 
 // recordedSession decodes the session_start and every run_start payload.
@@ -870,7 +878,7 @@ func TestBinaryStaleCacheFallbackOnImplicitRefresh(t *testing.T) {
 	}
 }
 
-func TestBinaryRefreshCacheWriteFailureExitsTwo(t *testing.T) {
+func TestBinaryRefreshCacheWriteWarning(t *testing.T) {
 	t.Parallel()
 	bin := buildHarness(t)
 	catalog := startFakeModelsDev(t)
@@ -879,17 +887,21 @@ func TestBinaryRefreshCacheWriteFailureExitsTwo(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A file where the cache directory must be makes the atomic cache write
-	// fail after a successful fetch.
+	// fail after a successful fetch. The SDK reports that as a catalog warning
+	// with a usable in-memory catalog, so the refresh still succeeds.
 	if err := os.WriteFile(filepath.Join(stateDir, "cache"), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, stderr, exit := runHarnessRawEnv(t, bin, t.TempDir(), stateDir, "",
+	stdout, stderr, exit := runHarnessRawEnv(t, bin, t.TempDir(), stateDir, "",
 		[]string{"ACODE_MODELS_DEV_URL=" + catalog.URL()}, nil, "-refresh-models")
-	if exit != exitConfig {
-		t.Fatalf("exit = %d, want %d\nstderr:\n%s", exit, exitConfig, stderr)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "cache") {
-		t.Fatalf("stderr does not name the cache failure:\n%s", stderr)
+	if !strings.Contains(stderr, "warning") || !strings.Contains(stderr, "cache") {
+		t.Fatalf("stderr does not name the cache warning:\n%s", stderr)
+	}
+	if !strings.HasPrefix(stdout, "refreshed ") {
+		t.Fatalf("stdout = %q, want the refresh summary", stdout)
 	}
 	assertNoSessionFiles(t, stateDir)
 }

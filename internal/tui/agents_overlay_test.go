@@ -368,7 +368,7 @@ func TestAgentsOverlayProvenanceAndNavigation(t *testing.T) {
 	host := newAgentHost()
 	host.defs = []AgentDefView{
 		{
-			Name: "explore", Description: "Read-only exploration.", Source: "bundled",
+			Name: "explore", Description: "Read-only exploration.", Source: "default",
 			Tools: []string{"read_file", "search"}, Status: "active", PromptFirstLine: "Explore the area.",
 		},
 		{
@@ -394,7 +394,7 @@ func TestAgentsOverlayProvenanceAndNavigation(t *testing.T) {
 	}
 	body := ansi.Strip(app.overlay.agents.view())
 	for _, want := range []string{"NAME", "SOURCE", "MODEL", "EFFORT", "TOOLS", "MAX_TURNS", "STATUS",
-		"explore", "bundled", "reviewer", "/state/agents/", "deepseek-v4.1", "12", "invalid", "broken.md",
+		"explore", "default", "reviewer", "/state/agents/", "deepseek-v4.1", "12", "invalid", "broken.md",
 		"m model", "e effort", "t max_turns", "d enabled", "r reset"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("definitions browser missing %q:\n%s", want, body)

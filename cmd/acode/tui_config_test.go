@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eddiectc/acode/internal/tui"
 	"github.com/eddiectc/aharness/model"
@@ -202,7 +205,7 @@ func TestTUISelectModelReportsContextClamp(t *testing.T) {
 			maxContextSet:    true,
 			maxContextValue:  500_000,
 		},
-		catalog: map[string]model.CatalogModel{
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
 			"small": {
 				ID:            "small",
 				Dialect:       model.DialectChat,
@@ -210,13 +213,16 @@ func TestTUISelectModelReportsContextClamp(t *testing.T) {
 				ContextWindow: 262_144,
 				ToolCall:      true,
 			},
-		},
+		}},
 	}
 	if _, err := host.SelectModel("small"); err != nil {
 		t.Fatalf("SelectModel: %v", err)
 	}
-	if host.cfg.MaxContextTokens != 262_144 {
-		t.Fatalf("MaxContextTokens = %d, want the model clamp", host.cfg.MaxContextTokens)
+	if host.next.limits.MaxContextTokens != 262_144 {
+		t.Fatalf("selected MaxContextTokens = %d, want the model clamp", host.next.limits.MaxContextTokens)
+	}
+	if host.cfg.MaxContextTokens != 1_000_000 {
+		t.Fatalf("session MaxContextTokens = %d, want the recorded value untouched", host.cfg.MaxContextTokens)
 	}
 	warning := host.TakeModelWarning()
 	if !strings.Contains(warning, "clamped") {
@@ -251,16 +257,118 @@ func TestTUIModelChoiceCopiesReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestTUISelectModelSwitchesBaseURL(t *testing.T) {
+	t.Parallel()
+	cfg := config{
+		Provider:         providerName,
+		Model:            "one",
+		Dialect:          model.DialectChat,
+		BaseURL:          "https://opencode.ai/inference/go/openai/v1",
+		MaxContextTokens: 200_000,
+		MaxTurns:         defaultMaxTurns,
+		MaxTotalTokens:   defaultMaxTotalTokens,
+		SessionTimeout:   defaultSessionTimeout,
+		ModelTimeout:     defaultModelTimeout,
+	}
+	if err := validateEffective(&cfg); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	host := &tuiHost{
+		cfg: cfg,
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"one": {
+				ID: "one", Dialect: model.DialectChat, BaseURL: "https://opencode.ai/inference/go/openai/v1",
+				ContextWindow: 200_000, ToolCall: true,
+			},
+			"two": {
+				ID: "two", Dialect: model.DialectChat, BaseURL: "https://opencode.ai/inference/go/openai/v2",
+				ContextWindow: 300_000, ToolCall: true,
+			},
+		}},
+	}
+	host.next = runSelection{
+		model:   cfg.Model,
+		dialect: cfg.Dialect,
+		baseURL: cfg.BaseURL,
+		limits:  cfg.Limits,
+	}
+	if _, err := host.SelectModel("two"); err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	if host.next.baseURL != "https://opencode.ai/inference/go/openai/v2" {
+		t.Fatalf("selected base URL = %q, want the new model's endpoint", host.next.baseURL)
+	}
+	if host.cfg.BaseURL != "https://opencode.ai/inference/go/openai/v1" {
+		t.Fatalf("session base URL = %q, want the recorded value untouched", host.cfg.BaseURL)
+	}
+}
+
+func TestNewCompleterForRejectsUnknownDialect(t *testing.T) {
+	t.Parallel()
+	completer := newCompleterFor(model.Dialect("future"), "https://example.invalid/v1",
+		"token", time.Second, "acode/test", "session")
+	_, err := completer.Complete(context.Background(), model.Request{Model: "m"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported provider dialect") {
+		t.Fatalf("unknown dialect error = %v, want a rejection", err)
+	}
+}
+
+// TestNewCompleterForUsesThePassedBaseURL pins P2.8: the factory builds the
+// adapter for the endpoint it is given, not a shared config field, so a
+// per-run model change reaches the new server.
+func TestNewCompleterForUsesThePassedBaseURL(t *testing.T) {
+	t.Parallel()
+	server := func(answer string) *fakeProvider {
+		return newFakeProvider(t, func(w http.ResponseWriter, r *http.Request, call int, body []byte) {
+			if r.URL.Path != "/chat/completions" {
+				t.Errorf("request path = %q, want /chat/completions", r.URL.Path)
+			}
+			writeJSON(w, 200, chatFinalResponse(answer))
+		})
+	}
+	one := server("one")
+	two := server("two")
+	req := model.Request{
+		Model:    "m",
+		Messages: []model.Message{{Role: model.RoleUser, Content: "hi"}},
+	}
+	for _, tc := range []struct {
+		provider *fakeProvider
+		want     string
+	}{
+		{provider: one, want: "one"},
+		{provider: two, want: "two"},
+	} {
+		completer := newCompleterFor(model.DialectChat, tc.provider.url, "token",
+			5*time.Second, acodeUserAgent("test"), "session")
+		response, err := completer.Complete(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Complete(%s): %v", tc.provider.url, err)
+		}
+		if response.Text != tc.want {
+			t.Fatalf("response from %s = %q, want %q", tc.provider.url, response.Text, tc.want)
+		}
+	}
+	for name, provider := range map[string]*fakeProvider{"one": one, "two": two} {
+		provider.mu.Lock()
+		calls := provider.calls
+		provider.mu.Unlock()
+		if calls != 1 {
+			t.Fatalf("%s server calls = %d, want 1", name, calls)
+		}
+	}
+}
+
 func TestTUIHostInfoTracksEffectiveEffort(t *testing.T) {
 	t.Parallel()
 	host := &tuiHost{
-		cfg:  config{ThinkingEffort: "high"},
+		next: runSelection{effort: "high"},
 		info: tui.Info{Model: "deepseek-v4.1-flash"},
 	}
 	if got := host.Info().ThinkingEffort; got != "high" {
 		t.Fatalf("Info().ThinkingEffort = %q, want high", got)
 	}
-	host.cfg.ThinkingEffort = ""
+	host.next.effort = ""
 	if got := host.Info().ThinkingEffort; got != "" {
 		t.Fatalf("Info().ThinkingEffort = %q, want the provider default", got)
 	}
@@ -319,13 +427,13 @@ func TestTUIResolveRunThinkingEffort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := config{ThinkingEffort: tc.inherited}
+			sel := runSelection{effort: tc.inherited}
 			var warnings []string
-			resolveRunThinkingEffort(&cfg, catalog, tc.model, tc.opts, func(text string) {
+			resolveRunThinkingEffort(&sel, catalog, tc.model, tc.opts, func(text string) {
 				warnings = append(warnings, text)
 			})
-			if cfg.ThinkingEffort != tc.want {
-				t.Fatalf("ThinkingEffort = %q, want %q", cfg.ThinkingEffort, tc.want)
+			if sel.effort != tc.want {
+				t.Fatalf("selection effort = %q, want %q", sel.effort, tc.want)
 			}
 			joined := strings.Join(warnings, "\n")
 			if tc.wantWarn != "" {

@@ -124,7 +124,14 @@ process). Runs must be idle: while a run is active the command reports that
 session switching is disabled and changes nothing.
 
 `/new` writes only the new session's `session_start`; it emits no command event
-and does not copy history or todo state from the old session.
+and does not copy history or todo state from the old session. It also mints a
+fresh contract: the current prompt and toolset versions, no recorded agent or
+grant, and a fresh read of the workspace-root `AGENTS.md`, if present. The text
+is passed through the engine's `Spec.AppendPrompt`, which folds and caps it and
+records `system_prompt` and `appended_prompt`; a skipped file adds a warning
+notice. A session created by `/new` therefore stays delegating, unlike one
+first created by batch. A resumed or forked session keeps its recorded prompt
+instead and never re-reads the file.
 
 ### `/resume`
 
@@ -325,8 +332,8 @@ at the parent interrupts as usual. The focused view is not an overlay, so
 
 ### `/agents`
 
-Opens the agent definitions browser: name, source (`bundled` or `user` with the
-file path), effective model and effort (`inherit` when absent, `default` after a
+Opens the agent definitions browser: name, source (`default` for a role
+shipped with acode, `user` with the file path), effective model and effort (`inherit` when absent, `default` after a
 model switch), tool count, `max_turns`, and status (`active`, `disabled`, or
 `invalid`). A `*` marks a value set by an operator override. `Enter` expands a
 row in place to show the tool list, the first prompt line, each setting's
@@ -338,7 +345,7 @@ The four routing settings are editable in place: `m` edits `model`, `e` edits
 removes every override for the row. Empty input clears that override field. The
 editor shows its prompt and any error in a footer; `Enter` saves and `Esc`
 cancels the edit without closing the browser. Rows are sorted by name. An
-invalid file appears as an `invalid` row while the bundled agent of the same
+invalid file appears as an `invalid` row while the shipped agent of the same
 name stays active.
 
 A save rewrites the active config file (`-config`/`ACODE_CONFIG`, default
@@ -366,8 +373,9 @@ is no operation to interrupt.
 ### `/cancel`
 
 Cancels the active run, equivalent to the second `Ctrl-C`: the runner writes
-`final` and `run_end`, syncs, removes the work directory, and returns the TUI
-to idle. Idle: reports that no run is active.
+`final` and `run_end`, syncs, the host removes the per-session work directory,
+and the TUI returns to idle. The next run recreates the work tree. Idle: reports
+that no run is active.
 
 ## Examples
 

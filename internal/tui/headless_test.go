@@ -58,7 +58,7 @@ func (h *fakeHost) History() ([]agent.HistoryItem, error) { return h.history, ni
 func (h *fakeHost) Workspace() *tools.Workspace           { return h.ws }
 func (h *fakeHost) Close() error                          { return nil }
 
-func (h *fakeHost) Start(sub Submission, opts RunOptions, steer <-chan string, display func(agent.DisplayEvent) error) (Run, error) {
+func (h *fakeHost) Start(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (Run, error) {
 	h.mu.Lock()
 	h.last = []byte(sub.Text)
 	h.lastOpts = opts
@@ -774,10 +774,10 @@ func newRosterHost() *rosterHost {
 	}
 }
 
-func (h *rosterHost) SteerSubagent(sessionID, text string) error {
+func (h *rosterHost) SteerSubagent(sessionID string, line agent.SteeringLine) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.steers = append(h.steers, steerCall{session: sessionID, text: text})
+	h.steers = append(h.steers, steerCall{session: sessionID, id: line.ID, text: line.Text})
 	return nil
 }
 
@@ -800,7 +800,7 @@ func (r *rosterRun) Interrupt()                {}
 func (r *rosterRun) Terminate()                { r.release() }
 func (r *rosterRun) Done() <-chan agent.Result { return r.done }
 
-func (h *rosterHost) Start(sub Submission, opts RunOptions, steer <-chan string, display func(agent.DisplayEvent) error) (Run, error) {
+func (h *rosterHost) Start(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (Run, error) {
 	done := make(chan agent.Result, 1)
 	emit := func(ev agent.DisplayEvent) {
 		if display != nil {

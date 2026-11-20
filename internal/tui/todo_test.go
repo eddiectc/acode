@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
@@ -14,13 +15,28 @@ import (
 	"github.com/eddiectc/aharness/tools"
 )
 
+// todoDetailsJSON runs the real todo tool so the fixture is the SDK's own
+// recorded details payload; a wire-shape change fails this test.
 func todoDetailsJSON(t *testing.T, items []tools.TodoItem) json.RawMessage {
 	t.Helper()
-	data, err := jsonv2.Marshal(todoDetails{Items: items})
+	ws, err := tools.OpenWorkspace(t.TempDir())
 	if err != nil {
-		t.Fatalf("marshal todo details: %v", err)
+		t.Fatalf("open workspace: %v", err)
 	}
-	return json.RawMessage(data)
+	t.Cleanup(func() { _ = ws.Close() })
+	reg := tools.NewRegistry(ws, tools.Options{})
+	args, err := jsonv2.Marshal(map[string]any{"items": items})
+	if err != nil {
+		t.Fatalf("marshal todo args: %v", err)
+	}
+	res := reg.Execute(context.Background(), tools.NameTodo, args)
+	if !res.OK {
+		t.Fatalf("todo tool failed: %+v", res)
+	}
+	if len(res.Details) == 0 {
+		t.Fatal("todo tool recorded no details")
+	}
+	return res.Details
 }
 
 func deliverTodo(t *testing.T, app *App, callID string, ok bool, items []tools.TodoItem) {

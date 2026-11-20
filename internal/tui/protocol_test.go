@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	jsonv2 "encoding/json/v2"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,70 @@ import (
 	"github.com/eddiectc/aharness/agent"
 	"github.com/eddiectc/aharness/model"
 )
+
+// TestUsageLineCoversEveryUsageField fails when model.Usage gains a field the
+// protocol line does not carry. Every integer field gets a distinct value and
+// must appear in the marshaled line; every boolean field must change it. A new
+// non-integer field fails until this test and usageLine are updated together.
+func TestUsageLineCoversEveryUsageField(t *testing.T) {
+	usage := model.Usage{}
+	value := reflect.ValueOf(&usage).Elem()
+	typ := value.Type()
+	unique := make(map[int64]string)
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		switch field.Type.Kind() {
+		case reflect.Int, reflect.Int32, reflect.Int64:
+			// Large enough that no protocol version or count can collide.
+			number := int64(1_000_003 + i*1_001)
+			value.Field(i).SetInt(number)
+			unique[number] = field.Name
+		case reflect.Bool:
+			// Checked one at a time below.
+		default:
+			t.Fatalf("model.Usage.%s has kind %s; extend usageLine and this test", field.Name, field.Type.Kind())
+		}
+	}
+	data, err := jsonv2.Marshal(usageLine(usage))
+	if err != nil {
+		t.Fatalf("marshal usage line: %v", err)
+	}
+	var decoded map[string]any
+	if err := jsonv2.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode usage line: %v", err)
+	}
+	present := make(map[int64]bool)
+	for _, item := range decoded {
+		if number, ok := item.(float64); ok {
+			present[int64(number)] = true
+		}
+	}
+	for number, name := range unique {
+		if !present[number] {
+			t.Fatalf("model.Usage.%s is not carried by UsageLine (value %d missing from %s)", name, number, data)
+		}
+	}
+
+	base, err := jsonv2.Marshal(usageLine(model.Usage{}))
+	if err != nil {
+		t.Fatalf("marshal empty usage line: %v", err)
+	}
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		if field.Type.Kind() != reflect.Bool {
+			continue
+		}
+		one := model.Usage{}
+		reflect.ValueOf(&one).Elem().Field(i).SetBool(true)
+		changed, err := jsonv2.Marshal(usageLine(one))
+		if err != nil {
+			t.Fatalf("marshal usage line with %s: %v", field.Name, err)
+		}
+		if bytes.Equal(base, changed) {
+			t.Fatalf("model.Usage.%s is not carried by UsageLine: %s", field.Name, changed)
+		}
+	}
+}
 
 func TestDecodeCommandValidation(t *testing.T) {
 	valid := []string{
