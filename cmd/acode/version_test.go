@@ -24,6 +24,30 @@ func TestWriteBuildInfo(t *testing.T) {
 	}
 }
 
+func TestStampedVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		linkVersion   string
+		moduleVersion string
+		want          string
+	}{
+		{name: "build stamp wins", linkVersion: "v1.2.3", moduleVersion: "v9.9.9", want: "v1.2.3"},
+		{name: "build stamp without module version", linkVersion: "v1.2.3", want: "v1.2.3"},
+		{name: "module version", moduleVersion: "v0.4.1", want: "v0.4.1"},
+		{name: "unversioned build", want: "devel"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := stampedVersion(tt.linkVersion, tt.moduleVersion); got != tt.want {
+				t.Errorf("stampedVersion(%q, %q) = %q, want %q",
+					tt.linkVersion, tt.moduleVersion, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWriteBuildInfoUnknownVCS(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer

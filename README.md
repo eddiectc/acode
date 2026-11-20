@@ -286,6 +286,33 @@ Paths must be absolute and are bound read-write, so the agent can modify them. A
 project-local `.venv`, `node_modules`, or `target/` needs no entry: it lives
 inside the project, which is already mounted.
 
+### Containers
+
+CI publishes a container image at `ghcr.io/eddiectc/acode` for `linux/amd64`
+and `linux/arm64`. It carries the binary, `/bin/sh`, git, and CA certificates,
+but no project toolchain: derive an image from it to add the compilers and test
+runners a workspace needs.
+
+```sh
+podman run --rm -it \
+  --userns=keep-id:uid=1000,gid=1000 \
+  -v "$PWD:$PWD" -w "$PWD" \
+  -v acode-state:/home/acode/.acode \
+  --network=host \
+  -e ACODE_MODEL -e ACODE_PROVIDER_TOKEN \
+  ghcr.io/eddiectc/acode
+```
+
+Mount the workspace at its host path and keep the state directory in a named
+volume: `<state-dir>` holds session logs, the config file, and the agent
+definitions that carry tool grants, so it is a control plane rather than
+disposable data. `-it` is required for the TUI; without it acode selects batch
+mode. Use `--env-file` rather than `-e` so a token does not land in the shell
+history or the container's inspected environment.
+
+[container.md](docs/container.md) covers UID mapping, secrets, host versus
+isolated networking, a LiteLLM-style gateway, and the image build arguments.
+
 ## Documentation
 
 | Document | Defines |
@@ -296,8 +323,10 @@ inside the project, which is already mounted.
 | [coding-standard.md](docs/coding-standard.md) | Normative Go practice, dependencies, testing, and §8 review gates |
 | [tui.md](docs/tui.md) | TUI modes, keys, `-ui-json` protocol, and caps |
 | [commands.md](docs/commands.md) | Slash-command reference: syntax, autocomplete, arguments, key equivalents, idle/run behavior, `-ui-json` mapping, and caps |
+| [container.md](docs/container.md) | Container image, mounts, UID/GID mapping, secrets, network modes, and the image CI |
 | [testing-strategy.md](docs/testing-strategy.md) | Config, integration, TUI/headless, fuzz, and manual smoke checks |
 | [definition-of-done.md](docs/definition-of-done.md) | Completion checklist for every change |
+| [release.md](docs/release.md) | Branch model, commit wording, pull-request gating, and release tagging |
 | [docs/README.md](docs/README.md) | Documentation map and placement rules |
 | [aharness SDK](https://github.com/eddiectc/aharness) | The loop, model, tools, session, and public facade this app builds on |
 
@@ -308,3 +337,8 @@ and the [definition of done](docs/definition-of-done.md). `make dod` runs
 `docs-check`, formatting, `go vet`, `golangci-lint`, `go test -race`, the
 `bin/acode` build, and `govulncheck`. Keep SDK changes in the aharness
 repository; acode contains no loop, tool, or provider logic.
+
+`main` is protected: work on a short-lived `feat/`, `fix/`, or `docs/` branch,
+keep history linear, and merge only with `make dod` green. A release is an
+annotated `vX.Y.Z` tag on a green `main` commit, which publishes the container
+image. See [release.md](docs/release.md).

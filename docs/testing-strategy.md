@@ -119,6 +119,12 @@ pending checks.
   frames, SVG, style truncation, and error codes.
 - Images: Kitty and glyph fallbacks, oversized files, and a resumed transcript.
 - Sandbox: `scripts/acode-bwrap` with the documented binds and `--shell`.
+- Container: build the image, then run the documented Podman and Docker
+  invocations in [container.md](container.md). Check that the TUI starts with
+  `-it`, that a state volume survives `--rm`, that the UID/GID mapping can
+  write the workspace and the state directory, that `run_command` works
+  (`/bin/sh` and git are present), and that `acode -version` reports the
+  stamped version rather than `devel`.
 
 A smoke that was not run is pending, not verified. Do not describe it
 otherwise.

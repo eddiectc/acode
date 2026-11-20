@@ -82,6 +82,11 @@ go.mod
 README.md
 AGENTS.md
 Makefile
+Dockerfile             # container image; see docs/container.md
+.dockerignore
+.github/workflows/
+  ci.yml               # make dod: the coding standard's §8 gates
+  image.yml            # ghcr.io/eddiectc/acode: latest on main, semver on a tag
 cmd/acode/
   main.go              # os.Exit(run())
   run.go               # mode selection, batch engine wiring, exit codes
