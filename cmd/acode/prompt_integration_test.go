@@ -47,16 +47,17 @@ const legacyRecordedPrompt = "You are aharness, a coding harness working in the 
 func seedRecordedPromptSession(t *testing.T, stateDir, workspace string) string {
 	t.Helper()
 	cfg := testSessionConfig(t, stateDir, workspace, "deepseek-v4.1-flash")
-	cfg.PromptVersion = agent.PromptVersionV2
-	cfg.SystemPrompt = legacyRecordedPrompt
-	cfg.Agent = "explore"
-	cfg.Tools = []string{tools.NameReadFile}
+	rcfg := testRunnerConfig(cfg)
+	rcfg.PromptVersion = agent.PromptVersionV2
+	rcfg.SystemPrompt = legacyRecordedPrompt
+	rcfg.Agent = "explore"
+	rcfg.Tools = []string{tools.NameReadFile}
 	id := session.NewID()
 	store, err := session.Create(stateDir, id)
 	if err != nil {
 		t.Fatalf("create legacy session: %v", err)
 	}
-	if err := agent.WriteSessionStart(store, runnerConfig(cfg), nil); err != nil {
+	if err := agent.WriteSessionStart(store, rcfg, nil); err != nil {
 		_ = store.Close()
 		t.Fatalf("write legacy session start: %v", err)
 	}
@@ -101,8 +102,11 @@ func TestBinaryBatchPromptShape(t *testing.T) {
 	if start.Agent != "" {
 		t.Fatalf("batch parent agent = %q, want a root session", start.Agent)
 	}
-	if slices.Contains(start.Tools, tools.NameDelegate) || !slices.Contains(start.Tools, tools.NameReadFile) {
-		t.Fatalf("batch grant = %v, want current tools without delegate", start.Tools)
+	if start.Tools != nil {
+		t.Fatalf("batch session grant = %v, want the full recorded toolset (unset)", start.Tools)
+	}
+	if slices.Contains(start.RootTools, tools.NameDelegate) || !slices.Contains(start.RootTools, tools.NameReadFile) {
+		t.Fatalf("batch root grant = %v, want current tools without delegate", start.RootTools)
 	}
 	bodies := providerBodies(provider)
 	if len(bodies) != 1 {

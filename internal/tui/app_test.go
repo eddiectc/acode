@@ -111,6 +111,7 @@ func newManualHost() *manualHost {
 			SessionID: "0190a0c4-0000-7000-8000-0000000000aa",
 			TracePath: "/tmp/trace", Model: "deepseek-v4.1-flash", Dialect: string(model.DialectChat),
 			Workspace: "/tmp/ws", MaxTurns: 30, MaxTotalTokens: 2_000_000,
+			ContextLimit: 200_000,
 		},
 		models: []ModelChoice{
 			{
@@ -290,11 +291,17 @@ func TestThinkingSettlesAcrossAnInterruptedAttempt(t *testing.T) {
 	if app.run.thinking == nil || !app.run.thinking.thinking {
 		t.Fatal("thinking block did not start streaming")
 	}
-	// The caller interrupts before any assistant text; the next attempt must
-	// not append into the stale block.
+	// A repeated start for the same turn and attempt is not a retry, so the
+	// live block stays open.
 	deliver(app, agent.ModelStarted{Turn: 1, Attempt: 1})
+	if app.run.thinking == nil || !app.run.thinking.thinking {
+		t.Fatal("a same-attempt start settled the live thinking block")
+	}
+	// The caller interrupts before any assistant text; the retry must not
+	// append into the stale block.
+	deliver(app, agent.ModelStarted{Turn: 1, Attempt: 2})
 	if app.run.thinking != nil {
-		t.Fatal("a new attempt kept the stale thinking pointer")
+		t.Fatal("a retry kept the stale thinking pointer")
 	}
 	deliver(app, agent.ReasoningDelta{Text: "second thought"})
 	var blocks []*transcriptItem
@@ -313,9 +320,103 @@ func TestThinkingSettlesAcrossAnInterruptedAttempt(t *testing.T) {
 		t.Fatalf("current block = %+v, want the in-progress second thought", blocks[1])
 	}
 
+	// A new turn with attempt 1 is a fresh attempt too.
+	deliver(app, agent.ModelStarted{Turn: 2, Attempt: 1})
+	if app.run.thinking != nil {
+		t.Fatal("a new turn kept the previous turn's thinking pointer")
+	}
+
 	run.done <- agent.Result{Status: agent.StopCompleted, CumulativeTurns: 1}
 	close(run.done)
 	finishRun(t, app, agent.Result{Status: agent.StopCompleted, CumulativeTurns: 1})
+}
+
+func TestDisplayDrainsAfterRunReturns(t *testing.T) {
+	host := newManualHost()
+	app := newTestApp(t, host)
+	run, call := startTestRun(t, app, "final events")
+	// Two events are already buffered when the runner returns.
+	if err := call.display(agent.Notice{Kind: agent.NoticeWarning, Text: "first final notice"}); err != nil {
+		t.Fatalf("display first notice: %v", err)
+	}
+	if err := call.display(agent.Notice{Kind: agent.NoticeWarning, Text: "second final notice"}); err != nil {
+		t.Fatalf("display second notice: %v", err)
+	}
+	// The production shape: one read is in flight when the run returns. It
+	// captures the run's stop channel, exactly as the read armed by startRun
+	// did.
+	if !app.run.readPending {
+		t.Fatal("startRun did not arm a display read")
+	}
+	inFlight := app.waitDisplayCmd()
+	if inFlight == nil {
+		t.Fatal("in-flight read command is nil")
+	}
+
+	result := agent.Result{Status: agent.StopCompleted, CumulativeTurns: 1}
+	run.done <- result
+	close(run.done)
+	if cmd := updateApp(t, app, runDoneMsg{run: app.run.number, result: result}); cmd != nil {
+		t.Fatalf("run completion returned a command while a read was pending: %v", cmd)
+	}
+	// The stop channel is closed, but the read must hand back a buffered event
+	// rather than declare the run drained. Both select cases are ready; the
+	// drain must be deterministic either way.
+	cmd := tea.Cmd(inFlight)
+	for range 10 {
+		if cmd == nil {
+			break
+		}
+		cmd = updateApp(t, app, cmd())
+	}
+	if !app.run.closed || app.run.active {
+		t.Fatalf("run state closed=%v active=%v, want settled", app.run.closed, app.run.active)
+	}
+	var notices []string
+	for _, item := range app.items {
+		if item.kind == itemNotice {
+			notices = append(notices, item.text)
+		}
+	}
+	joined := strings.Join(notices, "\n")
+	if !strings.Contains(joined, "first final notice") || !strings.Contains(joined, "second final notice") {
+		t.Fatalf("notices = %v, want both buffered events rendered", notices)
+	}
+	// The display channel stays open: the host owns its lifetime.
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("display channel was closed: %v", recovered)
+			}
+		}()
+		app.run.events <- agent.Notice{Kind: agent.NoticeWarning, Text: "still open"}
+	}()
+}
+
+func TestStaleRunEventCannotTouchTheHeader(t *testing.T) {
+	host := newManualHost()
+	app := newTestApp(t, host)
+	startTestRun(t, app, "current run")
+	deliver(app, agent.RunStarted{RunID: "run-current", Model: "deepseek-v4.1-flash", Dialect: "openai-chat"})
+	before := app.run.model
+
+	// A terminal event carrying another run's ID is discarded.
+	deliver(app, agent.RunFinished{
+		RunID:  "run-stale",
+		Result: agent.Result{Status: agent.StopInternalError, CumulativeTurns: 99},
+	})
+	if app.run.model != before || app.run.finished || app.info.Turns == 99 {
+		t.Fatalf("stale run event changed the header: model=%q turns=%d finished=%v",
+			app.run.model, app.info.Turns, app.run.finished)
+	}
+	// An event from the active run is still accepted.
+	deliver(app, agent.RunFinished{
+		RunID:  "run-current",
+		Result: agent.Result{Status: agent.StopCompleted, CumulativeTurns: 2},
+	})
+	if !app.run.finished || app.info.Turns != 2 {
+		t.Fatalf("current run event was dropped: finished=%v turns=%d", app.run.finished, app.info.Turns)
+	}
 }
 
 func TestThinkingItemsRespectTheTranscriptCap(t *testing.T) {

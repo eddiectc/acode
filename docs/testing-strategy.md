@@ -28,6 +28,11 @@ servers.
 - `/settings` reading, validation, atomic write, preservation of unrelated
   keys, file modes, and workspace-path refusal;
 - agent overrides, model/effort selection, and session-selection helpers;
+- the engine exit-code mapping for missing, locked, invalid, unsupported, and
+  configuration-class session opens;
+- the usage-line drift test: every `model.Usage` field is set to a unique value
+  and must appear in the marshaled `-ui-json` line, so a new SDK field fails
+  until the protocol is updated;
 - build metadata and version output.
 
 `internal/tui` unit tests cover display-only behavior:
@@ -40,6 +45,10 @@ servers.
 - model, effort, session, file, table, image, settings, agents, and child-view
   overlays;
 - terminal sanitization and image path policy;
+- run display lifetime: buffered events after the runner returns are drained in
+  order without closing the channel, a stale SDK run ID cannot change the
+  header, and a retry (`ModelStarted.Attempt`) is distinguishable from a new
+  turn for the thinking block;
 - headless `x/vt` cell/style/cursor projection, SVG snapshots, and the
   `-ui-json` command/event/frame encoders.
 
@@ -66,6 +75,11 @@ Cover at least:
 - resume/fork after interruption, unpaired calls, and torn final lines;
 - custom-tool refusal on the CLI, authorization, todo restoration, and
   delegation with child logs and folded accounting;
+- the recorded session contract: prompt version, `appended_prompt` on new TUI
+  and batch sessions, retention on resume, inheritance on fork, the acode
+  identity line inside `system_prompt`, and the grant split (`tools` full,
+  `root_tools` without `delegate` for a batch-created session, and a TUI resume
+  of that session that cannot dispatch `delegate`);
 - web search against a fake SearXNG and web fetch against fake builtin/Crawl4AI
   endpoints, including unconfigured and failure results;
 - TUI and `-ui-json` end to end: startup/seed, streaming before completion,

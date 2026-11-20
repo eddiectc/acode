@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/eddiectc/aharness/agent"
 	"github.com/eddiectc/aharness/tools"
 )
 
@@ -40,29 +39,35 @@ func readWorkspaceInstructions(ws *tools.Workspace) (string, error) {
 	return sanitizeText(string(data)), nil
 }
 
-// seedWorkspaceInstructions composes the workspace instructions into cfg for a
-// new session. It renders the base prompt when the config carries no explicit
-// one, joins the file with the same "\n\n" the engine uses, and records the
-// file as AppendedPrompt. The caller uses it only at a new-contract site, never
-// on resume or fork, so a running session can never pick up a changed file.
-// A skipped file is returned as one warning and leaves cfg unchanged.
-func seedWorkspaceInstructions(cfg *config, ws *tools.Workspace) string {
+// newSessionWorkspaceText reads the workspace root AGENTS.md for a new session.
+// The workspace is opened only for the read: the engine opens the handle it
+// keeps. A missing file yields empty text; an unreadable one is one warning and
+// yields empty text so the session still starts; a workspace that cannot be
+// opened is a hard error.
+func newSessionWorkspaceText(cfg config, warn func(string)) (string, error) {
+	ws, err := tools.OpenWorkspace(cfg.Workspace)
+	if err != nil {
+		return "", fmt.Errorf("open workspace %s: %w", cfg.Workspace, err)
+	}
+	text := workspaceInstructionsForNewSession(ws, warn)
+	closeErr := ws.Close()
+	if closeErr != nil && warn != nil {
+		warn("workspace instructions: close workspace: " + sanitizeText(closeErr.Error()))
+	}
+	return text, nil
+}
+
+// workspaceInstructionsForNewSession reads the root AGENTS.md through an open
+// workspace handle. A read failure becomes one warning and empty text, so a
+// session always starts; the SDK already bounds the file and applies the tool
+// path policy.
+func workspaceInstructionsForNewSession(ws *tools.Workspace, warn func(string)) string {
 	text, err := readWorkspaceInstructions(ws)
 	if err != nil {
-		return "workspace instructions skipped: " + sanitizeText(err.Error())
-	}
-	if text == "" {
+		if warn != nil {
+			warn("workspace instructions skipped: " + sanitizeText(err.Error()))
+		}
 		return ""
 	}
-	base := cfg.SystemPrompt
-	if base == "" {
-		rendered, err := agent.RenderSystemPrompt(cfg.PromptVersion, cfg.Workspace, acodeIdentity, cfg.Agents)
-		if err != nil {
-			return "workspace instructions skipped: render system prompt: " + sanitizeText(err.Error())
-		}
-		base = rendered
-	}
-	cfg.SystemPrompt = agent.CapSystemPrompt(base + "\n\n" + text)
-	cfg.AppendedPrompt = text
-	return ""
+	return text
 }

@@ -43,6 +43,7 @@ type recordedSessionStart struct {
 	AppendedPrompt   string         `json:"appended_prompt"`
 	Agent            string         `json:"agent"`
 	Tools            []string       `json:"tools"`
+	RootTools        []string       `json:"root_tools"`
 }
 
 type recordedRunStart struct {

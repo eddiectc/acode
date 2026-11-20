@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eddiectc/aharness/agent"
 	"github.com/eddiectc/aharness/tools"
 )
 
@@ -162,76 +161,49 @@ func TestReadWorkspaceInstructionsOverCapIsTooLarge(t *testing.T) {
 	}
 }
 
-func TestSeedWorkspaceInstructionsComposes(t *testing.T) {
+// TestWorkspaceInstructionsForNewSessionReadsTheFile pins the app-side half: the
+// engine owns rendering, joining, capping, and recording, so the app only reads
+// the root file and reports a skip.
+func TestWorkspaceInstructionsForNewSessionReadsTheFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	const text = "# Workspace rules\n\nWrite artifacts under out/.\n"
 	writeWorkspaceFile(t, dir, workspaceInstructionsFile, []byte(text), 0o600)
-	ws := openTestWorkspace(t, dir)
-	cfg := config{
-		Workspace:     dir,
-		PromptVersion: agent.PromptVersion,
-		Agents:        []agent.AgentInfo{{Name: "explore", Description: "Read-only lookup."}},
-	}
-	if warning := seedWorkspaceInstructions(&cfg, ws); warning != "" {
-		t.Fatalf("seed warning = %q", warning)
-	}
-	if cfg.AppendedPrompt != text {
-		t.Fatalf("appended prompt = %q, want the file text", cfg.AppendedPrompt)
-	}
-	if !strings.HasPrefix(cfg.SystemPrompt, "You are acode, a coding harness working in the workspace") {
-		t.Fatalf("composed prompt lacks the acode identity:\n%s", cfg.SystemPrompt)
-	}
-	if !strings.Contains(cfg.SystemPrompt, "- explore: Read-only lookup.") {
-		t.Fatalf("composed prompt lacks the catalog:\n%s", cfg.SystemPrompt)
-	}
-	if !strings.HasSuffix(cfg.SystemPrompt, "\n\n"+text) {
-		t.Fatalf("composed prompt does not end with the file after a blank line:\n%s", cfg.SystemPrompt)
-	}
-	if got := strings.Count(cfg.SystemPrompt, text); got != 1 {
-		t.Fatalf("file appears %d times, want once", got)
+	if got := workspaceInstructionsForNewSession(openTestWorkspace(t, dir), nil); got != text {
+		t.Fatalf("instructions = %q, want the file text", got)
 	}
 }
 
-func TestSeedWorkspaceInstructionsKeepsAnExplicitPrompt(t *testing.T) {
+func TestWorkspaceInstructionsForNewSessionEmptyWithoutFile(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	const text = "workspace rules\n"
-	writeWorkspaceFile(t, dir, workspaceInstructionsFile, []byte(text), 0o600)
-	cfg := config{SystemPrompt: "explicit base"}
-	if warning := seedWorkspaceInstructions(&cfg, openTestWorkspace(t, dir)); warning != "" {
-		t.Fatalf("seed warning = %q", warning)
+	var warnings []string
+	got := workspaceInstructionsForNewSession(openTestWorkspace(t, t.TempDir()), func(text string) {
+		warnings = append(warnings, text)
+	})
+	if got != "" {
+		t.Fatalf("instructions = %q, want empty", got)
 	}
-	if cfg.SystemPrompt != "explicit base\n\n"+text || cfg.AppendedPrompt != text {
-		t.Fatalf("prompt = %q appended = %q", cfg.SystemPrompt, cfg.AppendedPrompt)
-	}
-}
-
-func TestSeedWorkspaceInstructionsChangesNothingWithoutFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	cfg := config{SystemPrompt: "unchanged", AppendedPrompt: "kept"}
-	if warning := seedWorkspaceInstructions(&cfg, openTestWorkspace(t, dir)); warning != "" {
-		t.Fatalf("seed warning = %q", warning)
-	}
-	if cfg.SystemPrompt != "unchanged" || cfg.AppendedPrompt != "kept" {
-		t.Fatalf("cfg changed without a file: prompt = %q appended = %q", cfg.SystemPrompt, cfg.AppendedPrompt)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
 	}
 }
 
-func TestSeedWorkspaceInstructionsWarnsAndLeavesPromptOnSkip(t *testing.T) {
+func TestWorkspaceInstructionsForNewSessionWarnsOnSkip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, workspaceInstructionsFile), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	cfg := config{SystemPrompt: "unchanged", AppendedPrompt: "kept"}
-	warning := seedWorkspaceInstructions(&cfg, openTestWorkspace(t, dir))
-	if !strings.Contains(warning, "workspace instructions skipped") ||
-		!strings.Contains(warning, workspaceInstructionsFile) {
-		t.Fatalf("warning = %q", warning)
+	var warnings []string
+	got := workspaceInstructionsForNewSession(openTestWorkspace(t, dir), func(text string) {
+		warnings = append(warnings, text)
+	})
+	if got != "" {
+		t.Fatalf("instructions = %q, want empty on a skipped file", got)
 	}
-	if cfg.SystemPrompt != "unchanged" || cfg.AppendedPrompt != "kept" {
-		t.Fatalf("cfg changed on skip: prompt = %q appended = %q", cfg.SystemPrompt, cfg.AppendedPrompt)
+	if len(warnings) != 1 ||
+		!strings.Contains(warnings[0], "workspace instructions skipped") ||
+		!strings.Contains(warnings[0], workspaceInstructionsFile) {
+		t.Fatalf("warnings = %v, want one skip warning naming the file", warnings)
 	}
 }

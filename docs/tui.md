@@ -169,11 +169,12 @@ resets the transcript and counters. `/resume` opens a filtered list of previous
 sessions recorded for the same canonical workspace, newest first and excluding
 the active session. Each row shows the first task, session ID prefix,
 modification time, and recorded model; `Up`/`Down` select, `Enter` resumes, and
-`Esc` closes the picker. Both commands are idle-only. A successful switch
-replays the target's history and counters and emits a display-only `notice`
-with kind `session`; a locked, corrupt, or other-workspace target reports the
-error and leaves the active session open. See
-[commands.md § `/new`](commands.md#new) and
+`Esc` closes the picker. Both commands are idle-only and both open the target
+through the same engine path as startup, reading its history and counters
+before closing the old host. A successful switch replays the target's history
+and counters and emits a display-only `notice` with kind `session`; a locked,
+corrupt, or other-workspace target reports the error and leaves the active
+session open. See [commands.md § `/new`](commands.md#new) and
 [commands.md § `/resume`](commands.md#resume).
 
 ## Model picker
@@ -190,7 +191,9 @@ effective request budget: unless `-max-output-tokens` is explicit, output is
 unset and the request omits the field.
 
 Selecting a model changes only the next run's dialect, base URL, and limits;
-the current run and existing log are untouched. An explicit context limit is
+the current run and existing log are untouched. The header context ratio
+updates immediately from the host's resolved limit, including a clamp, even
+though the change applies to the next run. An explicit context limit is
 clamped to the new model's window; an explicit output budget is sent unchanged.
 A next-run thinking effort is kept when the new model advertises it; otherwise
 it is cleared to the provider default with a notice, and the next `run_start`
@@ -420,14 +423,16 @@ The status line shows `turns N` and `ctx N/L` and is refreshed while a run is
 active, not only when it ends. `turns` counts successful model responses
 cumulatively over the session; it shows `turns N/M` only when `-max-turns` is
 explicit and positive. `ctx` is context occupancy — the latest model response's
-input plus output tokens — against `L`, the effective per-call context window
-(the catalog `limit.context`, or an explicit `-max-context-tokens` clamped to
-it). It is deliberately not the session-cumulative token sum: that sum includes
-every tool round and retry, grows with each call, and is not comparable to a
-context window. A response that reported no usage leaves the last known
-occupancy in place instead of resetting it. When the context window is unknown
-the ratio is omitted and only the occupancy is shown; unlimited turn budgets
-never render as `0/0`.
+input plus output tokens — against `L`, the host-resolved effective per-call
+context window (the catalog `limit.context`, or an explicit
+`-max-context-tokens` clamped to it). The host supplies `L`; the display has no
+catalog fallback, and a model pick updates it immediately. It is deliberately
+not the session-cumulative token sum: that sum includes every tool round and
+retry, grows with each call, and is not comparable to a context window. A
+response that reported no usage leaves the last known occupancy in place
+instead of resetting it. When the context window is unknown the ratio is
+omitted and only the occupancy is shown; unlimited turn budgets never render as
+`0/0`.
 
 The details overlay (`Ctrl-X`) shows the observed `turns: N`,
 `tokens: <human>` (the session-cumulative sum), `ctx: <human>/<limit>`, and
@@ -505,6 +510,20 @@ Frames and snapshots are deterministic for a fixed provider/tool response,
 size, color profile, and image protocol: `-ui-json` hides the session ID,
 elapsed time, and durations. `-ui-json` always uses glyph image mode.
 
+The `-ui-json` driver frames off its own command handling. Bubble Tea exposes
+no renderer-complete barrier, and the `x/vt` emulator is written from the
+renderer's goroutine, so a completed command does not prove the cells are
+current. The driver therefore gives the renderer a short settle (30 ms) before
+it reads a frame; this is a frame-flush aid only, is reached only with
+`-ui-json`, and changes no durable state. Interactive terminals never take this
+path, and frame tests use the same deterministic settle.
+
+The app never closes the display channel. When the runner returns, the host
+stops its display callback and the app drains whatever events are already
+buffered, in order, before it completes the run. A stale event carrying another
+run's SDK run ID is discarded, so a previous run cannot change the current
+header.
+
 `-ui-size WxH` sets the initial frame size (default `100x30`, valid
 `20x5`–`500x200`); `resize` is bounded the same way.
 
@@ -537,10 +556,10 @@ elapsed time, and durations. `-ui-json` always uses glyph image mode.
 | Tool arguments preview | 2 KiB | Full arguments remain in `model_response`. |
 | Input history | 100 entries | In-memory only. |
 | Minimum terminal | 40×10 | Smaller shows a resize message and keeps quit/resize keys. |
-| Frame coalescing | 16 ms | Text deltas coalesce; state changes flush immediately. |
+| Frame coalescing | 33 ms | Text deltas coalesce (~30 fps); state changes flush immediately. |
 | Escape timeout | 50 ms | Bare Esc; modified sequences never interrupt. |
 | Mouse wheel | 3 lines per notch | Scrolls the transcript, or the top overlay when one is open. Clicks, releases, motion, and horizontal wheel events are ignored; focus reporting stays off. Terminal selection and middle-click paste need the terminal's `Shift` bypass; see [Terminal safety](#terminal-safety-and-images). |
-| Display queue | 256 events | Backpressure; display text deltas are not durable. |
+| Display queue | 256 events | Backpressure; display text deltas are not durable. The app never closes the channel; after the runner returns it drains the buffer and discards events from another SDK run ID. |
 | `-ui-json` command line / text | 1 MiB / 64 KiB | Longer is a protocol error. |
 | `-ui-json` frame line | 1 MiB | Over-cap emits `frame_too_large` and continues. |
 | `-ui-json` style spans | 16,000 or 256 KiB | Excess styles are dropped and `styles_truncated` is true; `lines` stay complete. |

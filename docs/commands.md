@@ -125,10 +125,13 @@ session switching is disabled and changes nothing.
 
 `/new` writes only the new session's `session_start`; it emits no command event
 and does not copy history or todo state from the old session. It also mints a
-fresh prompt contract: it re-reads the workspace-root `AGENTS.md`, if present,
-and composes it into the new `system_prompt` and `appended_prompt`; a skipped
-file adds a warning notice. A resumed or forked session keeps its recorded
-prompt instead and never re-reads the file.
+fresh contract: the current prompt and toolset versions, no recorded agent or
+grant, and a fresh read of the workspace-root `AGENTS.md`, if present. The text
+is passed through the engine's `Spec.AppendPrompt`, which folds and caps it and
+records `system_prompt` and `appended_prompt`; a skipped file adds a warning
+notice. A session created by `/new` therefore stays delegating, unlike one
+first created by batch. A resumed or forked session keeps its recorded prompt
+instead and never re-reads the file.
 
 ### `/resume`
 
@@ -370,8 +373,9 @@ is no operation to interrupt.
 ### `/cancel`
 
 Cancels the active run, equivalent to the second `Ctrl-C`: the runner writes
-`final` and `run_end`, syncs, removes the work directory, and returns the TUI
-to idle. Idle: reports that no run is active.
+`final` and `run_end`, syncs, the host removes the per-session work directory,
+and the TUI returns to idle. The next run recreates the work tree. Idle: reports
+that no run is active.
 
 ## Examples
 

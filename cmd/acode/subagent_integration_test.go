@@ -692,15 +692,73 @@ func TestBatchCannotDelegate(t *testing.T) {
 	if err != nil || len(files) != 1 {
 		t.Fatalf("session logs = %v (%v), want one", files, err)
 	}
-	// The recorded grant stays on the batch session.
+	// The recorded root grant stays on the batch session; the session grant
+	// remains full so a later TUI resume can still sound out the contract.
 	events := readSessionEvents(t, files[0])
 	var start struct {
-		Tools []string `json:"tools"`
+		Tools     []string `json:"tools"`
+		RootTools []string `json:"root_tools"`
 	}
 	if err := json.Unmarshal(events[0].Data, &start); err != nil {
 		t.Fatalf("decode session_start: %v", err)
 	}
-	if len(start.Tools) == 0 || contains(start.Tools, "delegate") {
-		t.Fatalf("batch grant = %v, want a recorded list without delegate", start.Tools)
+	if start.Tools != nil {
+		t.Fatalf("batch session grant = %v, want the full toolset (unset)", start.Tools)
+	}
+	if len(start.RootTools) == 0 || contains(start.RootTools, "delegate") {
+		t.Fatalf("batch root grant = %v, want a recorded list without delegate", start.RootTools)
+	}
+}
+
+// TestTUIResumeOfBatchSessionCannotDelegate is the grant-split contract: a
+// batch-created session records a full session grant and a root grant without
+// delegate, and the TUI honours the root grant through the engine-built
+// registry. Without root_tools on resume, this run could dispatch a child.
+func TestTUIResumeOfBatchSessionCannotDelegate(t *testing.T) {
+	t.Parallel()
+	bin := buildHarness(t)
+	workspace := t.TempDir()
+	stateDir := t.TempDir()
+	batchProvider := newFakeProvider(t, func(w http.ResponseWriter, r *http.Request, call int, body []byte) {
+		writeJSON(w, 200, chatFinalResponse("batch done"))
+	})
+	first := runHarness(t, bin, workspace, stateDir, batchProvider.url,
+		"-batch", "-task", "seed the contract", "-model", "deepseek-v4.1-flash")
+	if first.exit != 0 {
+		t.Fatalf("batch exit = %d\nstderr:\n%s", first.exit, first.stderr)
+	}
+
+	tuiProvider := newFakeProvider(t, func(w http.ResponseWriter, r *http.Request, call int, body []byte) {
+		switch call {
+		case 1:
+			writeJSON(w, 200, chatDelegateResponse("call_tui",
+				`{"intent":"delegate the read","tasks":[{"agent":"explore","task":"read hello.txt"}]}`))
+		case 2:
+			writeJSON(w, 200, chatFinalResponse("done without delegating"))
+		default:
+			writeJSON(w, 500, map[string]any{"error": "unexpected model call"})
+		}
+	})
+	script := strings.Join([]string{
+		`{"v":1,"type":"text","text":"try to delegate"}`,
+		`{"v":1,"type":"key","key":"enter"}`,
+		`{"v":1,"type":"wait","until":"idle","timeout_ms":20000}`,
+		`{"v":1,"type":"quit"}`,
+	}, "\n") + "\n"
+	_, stderr, exit := runHarnessRaw(t, bin, workspace, stateDir, tuiProvider.url, strings.NewReader(script),
+		"-ui-json", "-resume", first.id, "-max-output-tokens", "1000", "-max-context-tokens", "200000")
+	if exit != 0 {
+		t.Fatalf("tui resume exit = %d\nstderr:\n%s", exit, stderr)
+	}
+	data, err := os.ReadFile(sessionPathFor(stateDir, first.id))
+	if err != nil {
+		t.Fatalf("read session log: %v", err)
+	}
+	log := string(data)
+	if strings.Count(log, `"type":"session_start"`) != 1 {
+		t.Fatalf("a child session was created by the resumed TUI run:\n%s", log)
+	}
+	if !strings.Contains(log, `"name":"delegate"`) || !strings.Contains(log, `"code":"unknown_tool"`) {
+		t.Fatalf("the recorded root grant did not withhold delegate:\n%s", log)
 	}
 }

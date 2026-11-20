@@ -214,14 +214,24 @@ func validateModelThinkingEffort(value string, m model.CatalogModel) error {
 		value, id, strings.Join(m.ReasoningEfforts, ", "))
 }
 
-// clearInheritedThinkingEffort applies the model-switch rule: an inherited
-// effort the new model does not advertise is cleared with a visible warning.
+// clearInheritedThinkingEffort applies the model-switch rule to the session
+// configuration: an inherited effort the new model does not advertise is
+// cleared with a visible warning.
 func clearInheritedThinkingEffort(cfg *config, m model.CatalogModel, warn func(string)) {
 	if cfg.ThinkingEffort == "" {
 		return
 	}
-	if m.SupportsEffort(cfg.ThinkingEffort) {
-		return
+	cfg.ThinkingEffort = clearedThinkingEffort(cfg.ThinkingEffort, m, warn)
+}
+
+// clearedThinkingEffort returns value when m advertises it, or the provider
+// default (the empty string) with a warning when it does not.
+func clearedThinkingEffort(value string, m model.CatalogModel, warn func(string)) string {
+	if value == "" {
+		return ""
+	}
+	if m.SupportsEffort(value) {
+		return value
 	}
 	reason := "does not advertise it"
 	switch {
@@ -230,12 +240,11 @@ func clearInheritedThinkingEffort(cfg *config, m model.CatalogModel, warn func(s
 	case len(m.ReasoningEfforts) == 0:
 		reason = "advertises no effort levels"
 	}
-	value := cfg.ThinkingEffort
-	cfg.ThinkingEffort = ""
 	if warn != nil {
 		warn(fmt.Sprintf("thinking effort %q cleared: model %s %s; using the provider default",
 			value, catalogField(m.ID, 256), reason))
 	}
+	return ""
 }
 
 // usableCatalogModel looks up id and rejects entries the harness cannot use.
@@ -419,26 +428,12 @@ func applySessionDefaults(ctx context.Context, cfg *config, state agent.State, s
 	}
 	cfg.PromptVersion = state.PromptVersion
 	cfg.ToolsetVersion = state.ToolsetVersion
-	// The recorded prompt, agent, grant, and host provenance are replay values:
-	// a resumed or forked session keeps exactly what it recorded, so an edited
-	// agent file never rewrites an existing prompt and a pre-change session
-	// cannot delegate. AppendedPrompt is provenance and the source fresh
-	// children inherit; it is never appended again here.
-	cfg.SystemPrompt = state.SystemPrompt
-	cfg.AppendedPrompt = state.AppendedPrompt
+	// The recorded prompt, agent, grant, and host provenance are replay
+	// values the engine host owns: a resumed or forked session keeps exactly
+	// what it recorded, so an edited agent file never rewrites an existing
+	// prompt and a pre-change session cannot delegate.
 	cfg.Agent = state.Agent
-	cfg.Tools = cloneStrings(state.Tools)
 	return validateEffective(cfg)
-}
-
-// cloneStrings preserves the nil/non-nil grant distinction across CLI session
-// defaults. A nil grant means every tool of the recorded version; an explicit
-// empty grant means none.
-func cloneStrings(names []string) []string {
-	if names == nil {
-		return nil
-	}
-	return append([]string{}, names...)
 }
 
 // baseURLIsLoopback reports whether a resolved base URL points at a local

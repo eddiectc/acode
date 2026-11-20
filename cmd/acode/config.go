@@ -119,15 +119,10 @@ type config struct {
 	Stream    bool
 	StreamSet bool
 
-	// The recorded session contract. Tools is the tool-name grant (nil means
-	// every tool of the recorded version); SystemPrompt and Agent are set for
-	// a delegated child session. AppendedPrompt is the workspace text already
-	// composed into SystemPrompt; it is provenance for the recorded log and the
-	// source new children inherit from, never an append input.
-	Tools          []string
-	SystemPrompt   string
-	AppendedPrompt string
-	Agent          string
+	// The recorded session contract. Agent is replayed on resume and fork.
+	// The observed prompt text is the engine host's; this process never
+	// records or touches it.
+	Agent string
 	// Agents is the discovered definition catalog rendered into the current
 	// parent prompt.
 	Agents []agent.AgentInfo
@@ -167,8 +162,6 @@ type config struct {
 	httpTimeoutSet    bool
 	catalogTimeoutSet bool
 	thinkingEffortSet bool
-	uiRichSet         bool
-	uiExpandSet       bool
 }
 
 // envSettings is the environment layer. It is parsed before flags so defaults
@@ -762,8 +755,6 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		httpTimeoutSet:    httpTimeoutLayer.set(),
 		catalogTimeoutSet: catalogTimeoutLayer.set(),
 		thinkingEffortSet: thinkingEffortSet,
-		uiRichSet:         file.UIRich != nil,
-		uiExpandSet:       file.UIExpandAll != nil,
 		SettingSources:    configSettingSources(visited, env, file),
 	}
 	if cfg.maxContextSet {

@@ -54,8 +54,8 @@ for status, deviations, and verification notes.
 | Document | Status |
 |---|---|
 | [plans/delegation-fidelity-build.md](plans/delegation-fidelity-build.md) | Implemented 2026-11-19 for Phases 1–2; probes R1/R2 pending real-model access |
-| [plans/engine-host-build.md](plans/engine-host-build.md) | Proposed 2026-11-18 |
-| [plans/prompt-optimization-build.md](plans/prompt-optimization-build.md) | Partially implemented 2026-11-19 by the aharness v0.3.0 bump (Phase 2 upstream, Phase 1 and identity app-side); real-model probes pending |
+| [plans/engine-host-build.md](plans/engine-host-build.md) | Implemented 2026-11-20 (Phases 1–4) against aharness v0.4.1; real-provider and real-terminal smokes pending |
+| [plans/prompt-optimization-build.md](plans/prompt-optimization-build.md) | Partially implemented 2026-11-19 by the aharness v0.3.0 bump; v0.4.0 workspace instructions adopted by delegation-fidelity Phase 2; real-model probes pending |
 | [plans/prompt-transparency-build.md](plans/prompt-transparency-build.md) | Proposed 2026-11-19 |
 | [plans/transcript-folding-build.md](plans/transcript-folding-build.md) | Implemented 2026-11-14; real-provider fold smoke pending |
 | [plans/tui-build.md](plans/tui-build.md) | Implemented 2026-11-10 |

@@ -100,7 +100,7 @@ contract. See [tui.md](tui.md) for shipped behavior and
 | Tool arguments preview | 2 KiB or 8 lines | Full arguments remain in `model_response`/the log. |
 | Input history | 100 entries | In-memory only; not persisted. |
 | Minimum terminal size | 40×10 | Below shows a resize message; quit/resize keys still work. |
-| Frame coalescing | 16 ms | Text deltas coalesce; state changes flush immediately. |
+| Frame coalescing | 33 ms | Text deltas coalesce (~30 fps); state changes flush immediately. |
 | Escape timeout | 50 ms | A lone Esc is delivered; modified sequences never interrupt. |
 | Mouse wheel | 3 lines per notch | Scrolls the transcript, or the top overlay when one is open. Clicks, releases, motion, and horizontal wheel events are ignored; focus reporting stays off. Terminal text selection and middle-click paste need the terminal's `Shift` bypass; see [tui.md](tui.md). |
 | Display queue | 256 events | Backpressure; text deltas are not durable. |
@@ -120,9 +120,10 @@ contract. See [tui.md](tui.md) for shipped behavior and
 Child turns have no separate fixed cap: the definition's `max_turns`, then the
 parent's explicit `-max-turns`, then unlimited. The real bound is observation
 plus `Esc`: `SubagentProgress` is forwarded through the parent display,
-`/agent-hub` shows a moving clock, and `-batch` never grants `delegate`. Tokens
-are different: a child always spends inside the parent's call, so its tokens
-count against `-max-total-tokens` and cannot escape the budget.
+`/agent-hub` shows a moving clock, and a batch-created session's root grant
+never offers `delegate`. Tokens are different: a child always spends inside the
+parent's call, so its tokens count against `-max-total-tokens` and cannot
+escape the budget.
 
 These are intentionally bounded only by an enclosing limit, not by a dedicated
 constant:

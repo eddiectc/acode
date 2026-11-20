@@ -180,7 +180,7 @@ func (m *App) statusLine() string {
 	// Tokens are context occupancy against the per-call context ceiling: the
 	// cumulative sum over every response is not comparable to a context window
 	// and grows with each tool round.
-	tokensLabel := "ctx " + formatTokenBudget(contextTokens, m.contextLimit())
+	tokensLabel := "ctx " + formatTokenBudget(contextTokens, m.info.ContextLimit)
 	state := string(m.currentState())
 	renderMode := "rich"
 	if !m.rich {
@@ -806,21 +806,6 @@ func humanTokens(n int) string {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
 	}
 	return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-}
-
-// contextLimit reports the effective per-call context ceiling: the host's
-// resolved context window when available, otherwise the selected model's
-// catalog window. Zero means unknown and omits the ratio.
-func (m *App) contextLimit() int {
-	if m.info.ContextLimit > 0 {
-		return m.info.ContextLimit
-	}
-	for _, choice := range m.models {
-		if choice.ID == m.currentModelID() && choice.ContextWindow > 0 {
-			return choice.ContextWindow
-		}
-	}
-	return 0
 }
 
 // formatTurnBudget renders cumulative turns with an explicit positive budget.

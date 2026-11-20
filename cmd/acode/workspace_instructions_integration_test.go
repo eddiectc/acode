@@ -431,9 +431,9 @@ func TestBinaryDelegatedChildOfLegacyParentGetsNoWorkspaceInstructions(t *testin
 	workspace := t.TempDir()
 	writeWorkspaceRules(t, workspace, workspaceRules)
 	stateDir := t.TempDir()
-	parentID := createTestSessionWithContract(t, stateDir, workspace, "deepseek-v4.1-flash", func(cfg *config) {
-		cfg.PromptVersion = agent.PromptVersionV2
-		cfg.SystemPrompt = legacyRecordedPrompt
+	parentID := createTestSessionWithContract(t, stateDir, workspace, "deepseek-v4.1-flash", func(c *agent.Config) {
+		c.PromptVersion = agent.PromptVersionV2
+		c.SystemPrompt = legacyRecordedPrompt
 	})
 	provider := newFakeProvider(t, func(w http.ResponseWriter, r *http.Request, call int, body []byte) {
 		switch call {

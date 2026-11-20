@@ -1,12 +1,14 @@
 # acode prompt optimization build plan
 
-- **Date:** 2026-11-19 (revised after the aharness v0.3.0 bump; first issued
-  the same day against v0.2.0).
-- **Status:** partially implemented by the v0.3.0 bump. Phase 1 landed (the
-  five role definitions, now forced: the SDK ships none), Phase 2 shipped
-  upstream inside v0.3.0, Phase 0 is retired, and the composed-prompt half of
-  Phase 3 is superseded by the SDK's tier-1 path (§4). What remains is the
-  §13 probe pass, pending upstream as well.
+- **Date:** 2026-11-19 (revised 2026-11-20 after the aharness v0.4.1 bump;
+  first issued the same day against v0.2.0, then revised after v0.3.0).
+- **Status:** partially implemented. The v0.3.0 bump landed Phase 1 (the five
+  role definitions) and the tier-1 identity; v0.4.0 added workspace-instruction
+  propagation and `appended_prompt`, adopted by
+  [delegation-fidelity-build.md](delegation-fidelity-build.md) Phase 2; v0.4.1
+  is a patch with no prompt change. Phase 2 shipped upstream inside v0.3.0,
+  Phase 0 is retired, and the composed-prompt half of Phase 3 is superseded by
+  the SDK's tier-1 path (§4). What remains is the §13 probe pass.
 - **Source:** a review of every prompt surface aharness v0.2.0 shipped (the
   main-agent template, the child template, the five bundled role
   definitions, and the tool schemas), plus a 2026-11 web research pass on
@@ -15,8 +17,13 @@
   them were temporary and are gone. The upstream answer is aharness v0.3.0,
   "the prompt-surface release", and its build plan
   (`docs/plans/prompt-surface-build.md` in the aharness repository), whose
-  Appendix A is the role-content handoff this plan's §6 was waiting on.
-- **Target:** Go 1.27.4, module `acode`, aharness v0.3.0.
+  Appendix A is the role-content handoff this plan's §6 was waiting on. Two
+  later releases touch this plan's surfaces: v0.4.0
+  (`docs/plans/workspace-instructions-build.md`) propagates
+  `Config.Instructions` to fresh children and records
+  `session_start.appended_prompt`; v0.4.1 restores Responses reasoning text
+  with no prompt change.
+- **Target:** Go 1.27.4, module `acode`, aharness v0.4.1.
 - **Architecture:** [architecture.md](../architecture.md) defines the SDK
   boundary; the role-definition and identity ownership note landed with the
   bump. Prompt and role-definition caps are SDK-owned, so
@@ -54,19 +61,27 @@ with a different mechanism than proposed:
    caps, catalog, spawner, and overrides stay in the SDK. The old P1.2 —
    mirror the same text upstream as bundled defaults — is dead: nothing in
    the SDK may reproduce these texts.
+4. **The workspace rules reach children — answered upstream in v0.4.0.**
+   `Config.Instructions` now reaches every fresh child, survives resume and
+   fork, and is recorded once as `session_start.appended_prompt`. acode reads
+   the root `AGENTS.md` on a new session and passes the bytes through that
+   input ([delegation-fidelity-build.md](delegation-fidelity-build.md) D3,
+   D6). This retires §1.4's children-never-see-rules gap and turns §5's
+   read-cost probe into a duplicate-read check.
 
 | Phase | Contents | Status |
 |---|---|---|
 | 0 | Zero-code pilot: install the §6 role definitions in `~/.acode/agents/` | **Retired** — no bundled set exists to pilot against, and the SDK's breaks are compile-time, so the pilot's evidence role vanished |
-| 1 | acode ships its five role definitions; operator files still win | **Landed** with the v0.3.0 bump (§6) |
+| 1 | acode ships its five role definitions; operator files still win | **Landed** with the v0.3.0 bump (§6); the `researcher` trigger was revised by the delegation-fidelity plan's Phase 1 |
 | 2 | SDK `prompt-v3` shared body + the ownership exports | **Shipped upstream** in v0.3.0 (§4.3–§4.4) |
 | 3 | acode composes its prompt through `Config.SystemPrompt` | **Superseded** — tier 1 needs no `SystemPrompt`; only the identity half was acode's to set, and it is set (§4) |
+| 4 | Workspace instructions reach parents and fresh children | **Shipped upstream** in v0.4.0; adopted app-side by [delegation-fidelity-build.md](delegation-fidelity-build.md) Phase 2 |
 
 ## 1. Problem
 
 This section is the motivating record, written against aharness v0.2.0; each
-gap it names is closed by v0.3.0 (§4–§6), so its facts describe the release
-the plan was filed against, not the current tree.
+gap it names is closed by v0.3.0 or v0.4.0 (§4–§6), so its facts describe the
+release the plan was filed against, not the current tree.
 
 ### 1.1 The incident
 
@@ -115,19 +130,25 @@ delegating beats a self-check. `implementer`'s description encodes a trigger
 ("scoped… one change"); `reviewer`'s does not, and the observed failure is
 the predicted outcome.
 
-### 1.4 Composition gaps
+### 1.4 Composition gaps — closed
 
-- **Children never see the workspace's rules.** `RenderSystemPrompt` receives
-  only the workspace and the agent catalog; a delegated child gets its role
-  body plus the harness rules, and nothing tells it to read `AGENTS.md`.
-  `reviewer` has `read_file` and *could*, but no instruction does.
-- **acode injects nothing.** It never sets `AppendSystemPrompt` or
-  `Instructions`, so a new session gets the SDK template plus the workspace
-  path and nothing else.
-- **The SDK brands the product.** The identity line "You are aharness, a
-  coding harness…" is recorded verbatim in `session_start`, replayed on
-  resume, and visible in the transcript and child-session views — against
-  this repo's own non-negotiable that user-visible branding is acode's.
+All three gaps in this section are closed; the bullets record what the plan
+was filed against and the release that answered each.
+
+- **Children never see the workspace's rules.** Closed by v0.4.0:
+  `Config.Instructions` reaches every fresh child and survives resume and
+  fork, and acode seeds the root `AGENTS.md` through it
+  ([delegation-fidelity-build.md](delegation-fidelity-build.md) D3/D6). A
+  delegated child now records the parent's workspace text after its own rules
+  and role body. A legacy session with no recorded `appended_prompt` still
+  relies on the v3 read rule.
+- **acode injects nothing.** Closed: acode passes the workspace file's bytes
+  through `engine.Spec.AppendPrompt` on a new batch session or, because the
+  TUI writes its own `session_start`, composes them into `SystemPrompt` and
+  sets the record-only `agent.Config.AppendedPrompt`. It still authors no
+  prompt text of its own.
+- **The SDK brands the product.** Closed by v0.3.0: `Config.Identity` names
+  acode in parent and child identity lines (`run.go:254`, `run.go:418`).
 
 ## 2. Prompt surfaces and constraints
 
@@ -148,7 +169,8 @@ Two structural facts shape the design:
    detail in the role body, which only loads when that agent runs.
 2. **Sessions record the resolved prompt verbatim — verified.** The recorded
    `session_start.system_prompt` is authoritative for parents and children
-   alike, and acode's resume path re-supplies the recorded text
+   alike, with `appended_prompt` recording the host text folded into it, and
+   acode's resume path re-supplies both recorded values
    (`cmd/acode/models.go`), so a role `Prompt` or `Description` change
    reaches new sessions and new children without a prompt version bump, and
    a pre-change session replays its recorded prompt byte-identically. DEC4
@@ -156,18 +178,25 @@ Two structural facts shape the design:
 
 ### Host override surface
 
-Verified against v0.3.0; acode uses the identity and the discovery seam.
+Verified against v0.4.1; acode uses the identity, the workspace-instruction
+input, and the discovery seam.
 
 | Knob | Effect | Reaches | Notes |
 |---|---|---|---|
-| `aharness.Config.Identity` (facade), `engine.Spec.Identity`, `agent.Config.Identity` | names the product in the parent and child identity lines | Parents and children, new/fork only — not recorded | acode sets it at both construction sites (`cmd/acode/run.go:240`, `run.go:402`); ≤64 bytes, no control characters; resume replays the recorded text |
+| `aharness.Config.Identity` (facade), `engine.Spec.Identity`, `agent.Config.Identity` | names the product in the parent and child identity lines | Parents and children, new/fork only — not recorded | acode sets it at both construction sites (`cmd/acode/run.go:254` in `batchEngineSpec`, `run.go:418` in `runnerConfig`); ≤64 bytes, no control characters; resume replays the recorded text |
 | `aharness.Config.PromptTag`, `engine.Spec.PromptTag`, `agent.Config.PromptTag` | attributes the host's prompt template | `session_start.prompt_tag`, new sessions | Optional, ≤64 printable ASCII; resume keeps the recorded tag, fork prefers an explicit one. **Unused by acode under tier 1** (§4.3 ask 3) |
-| `aharness.Config.Instructions` | appended after the rendered prompt | New/Fork parents only | Rejected on resume; a fork with instructions now appends to the recorded prompt (fixed in v0.3.0) |
+| `aharness.Config.Instructions` (facade), `engine.Spec.AppendPrompt`; `agent.Config.AppendedPrompt` | the facade/engine compose the text after the rendered or recorded prompt; `agent.Config.AppendedPrompt` records the same bytes and never appends | New/fork parents **and every fresh child**; survives resume and fork | v0.4.0: all paths record `session_start.appended_prompt`; a resumed session carries the recorded text, a fork inherits or extends it, and a child records none. A fork with `Instructions` records the union with its `system_prompt` bytes unchanged. Root-only text belongs in a composed `SystemPrompt`. acode passes the root `AGENTS.md` bytes here. |
 | `aharness.Config.SystemPrompt` | replaces the whole prompt | New/Fork parents only | The tier-3 escape hatch; acode does not use it (§4) |
 | `<state-dir>/agents/*.md` | replaces one shipped definition by name | that role, parent catalog and child | `agent.LoadAgents(defaults, stateDir)` at `cmd/acode/tui.go:765`; the 200-byte cap applies; invalid files are skipped with a warning and never replace |
 
-Children are reached by exactly one config knob: `Identity` flows into
-`childSystemPrompt`. Everything else children see comes through their
+Two corrections since v0.3.0. v0.4.0 widened `Instructions` from "new/fork
+parents only" to parents **and fresh children**, with resume/fork replay and
+an `appended_prompt` record; `agent.Config.AppendSystemPrompt` was removed as
+engine-dead, and acode never used it.
+
+Children are now reached by two config knobs: `Identity` flows into
+`childSystemPrompt`, and the recorded `AppendedPrompt` is composed after the
+child's rules and role body. Everything else children see comes through their
 recorded prompt version — which is why the §1.4 fixes (project instructions,
 escape hatch, verify/report) shipped upstream in the shared body rather than
 as an app-side append.
@@ -267,11 +296,13 @@ Tier 1 is enough for acode because the two things the composed prompt was
 for are no longer app-side problems: the identity is one field, and the
 delegation criterion went upstream into the v3 body (§4.5). Retyping the
 SDK's four coding-policy lines to obtain them would be the drift the plan
-exists to avoid. If acode grows genuine product rules later, they enter
-through tier 2 with a `PromptTag` for attribution — never by editing SDK
-text.
+exists to avoid. Tier 1 also carries the host's recorded prompt appendix
+(`Instructions` / `Spec.AppendPrompt`), which in acode is the workspace's own
+`AGENTS.md`: workspace data recorded beside the inherited body, not composed
+prompt text. If acode grows genuine product rules later, they enter through
+tier 2 with a `PromptTag` for attribution — never by editing SDK text.
 
-### 4.2 Mechanics (verified in the v0.3.0 source)
+### 4.2 Mechanics (verified in the v0.4.1 source)
 
 - **New sessions render the identity; resume and fork inherit the recorded
   text.** Resume is correct, since it replays the session that ran, and a
@@ -281,31 +312,42 @@ text.
   identity line until `/new` starts a fresh contract. `Identity` is not
   recorded, so every construction supplies it, the same pattern as the user
   agent.
-- **The wiring is two fields and a base catalog.** `acodeIdentity` is set
-  at both construction sites (`cmd/acode/run.go:240` for the engine spec,
-  `run.go:402` for the runner config, which covers TUI children through
-  the spawner), and the five definitions seed `LoadAgents`
-  (`cmd/acode/tui.go:765`). The `SystemPrompt` plumbing through
-  `config.go:126`/`run.go:412` is replay plumbing, not composition: the TUI
-  writes its own `session_start`, so it re-supplies the recorded prompt on
-  resume and fork (`models.go:426`); batch lets the engine inherit it. The
-  tier-3 replacement path is unused.
+- **The wiring is two fields, a seed, and a base catalog.** `acodeIdentity`
+  is set at both construction sites (`cmd/acode/run.go:254` in
+  `batchEngineSpec`, `run.go:418` in `runnerConfig`, which covers TUI
+  children through the spawner), and the five definitions seed `LoadAgents`
+  (`cmd/acode/tui.go:765`). The `SystemPrompt`/`AppendedPrompt` plumbing
+  through `config.go:123-129`/`run.go:410-441` is replay and seed plumbing,
+  not composition: the TUI writes its own `session_start`, so it re-supplies
+  the recorded prompt on resume and fork (`models.go:427-428`) and composes
+  the workspace text on a new session (`workspace_instructions.go`); batch
+  lets the engine inherit the recorded text and folds `Spec.AppendPrompt` on
+  a new session. The tier-3 replacement path is unused.
+- **Workspace instructions are host data, not a tier change.** The SDK still
+  does not discover files; acode reads the root `AGENTS.md` through
+  `tools.Workspace.ReadDisplayFile` (16 KiB cap, sanitized) and passes the
+  bytes through the prompt input. v0.4.0 records them as
+  `session_start.appended_prompt` and carries them to fresh children, so the
+  composed prompt is still the SDK body plus the identity and this recorded
+  workspace text; no acode-authored prompt paragraph exists.
 - **Recorded verbatim, 32 KiB cap.** A new TUI session records the v3 body
-  with the acode identity line and the catalog of acode's own definitions.
-  A batch new session records the same identity and body without a catalog:
-  batch withholds `delegate` and loads no definitions, so a catalog would
-  advertise roles it cannot call.
+  with the acode identity line and the catalog of acode's own definitions,
+  plus `appended_prompt` when the workspace has a root `AGENTS.md`. A batch
+  new session records the same identity and body with any workspace text and
+  without a catalog: batch withholds `delegate` and loads no definitions, so
+  a catalog would advertise roles it cannot call.
 - **`/new` starts a fresh contract.** Resume and fork leave the recorded
-  prompt, versions, agent, and grant on the host config for replay; `/new`
-  clears them before writing its `session_start`, so a fresh TUI session
-  records the current prompt version, the acode identity, the catalog, and
-  its own grant.
+  prompt, `appended_prompt`, versions, agent, and grant on the host config for
+  replay; `/new` clears them, including `AppendedPrompt`
+  (`sessions.go:140-141`), before writing its `session_start`, so a fresh TUI
+  session records the current prompt version, the acode identity, the
+  catalog, the workspace seed, and its own grant.
 - **It lives in `cmd/acode`**, which [AGENTS.md](../../AGENTS.md) assigns
-  "wiring and I/O only" — setting two config fields and seeding a base
-  catalog is wiring; the loop, projection, and session contracts stay in
-  the SDK.
+  "wiring and I/O only" — setting two config fields, reading one workspace
+  file, and seeding a base catalog is wiring; the loop, projection, and
+  session contracts stay in the SDK.
 
-### 4.3 The SDK asks — all five answered in v0.3.0
+### 4.3 The SDK asks — the five v0.3.0 asks answered, plus a sixth in v0.4.0
 
 1. **Composition primitives — three, not one.** `agent.LoopRules()` returns
    the version-independent invariants (tool calls are the only way to act,
@@ -349,6 +391,13 @@ text.
    removed outright, so a nil base means no definitions and the facade
    rejects an empty `DelegationConfig.Agents` loudly. acode seeds its five;
    operator files still win.
+6. **Workspace instructions reach every fresh child — shipped in v0.4.0.**
+   This was §1.4's gap, not one of the five original asks.
+   `Config.Instructions` now propagates to fresh children, survives resume
+   and fork, and is recorded once as `session_start.appended_prompt`;
+   `agent.Config.AppendSystemPrompt` was removed as engine-dead. acode
+   adopted it in [delegation-fidelity-build.md](delegation-fidelity-build.md)
+   Phase 2.
 
 ### 4.4 The `prompt-v3` shared body — shipped upstream
 
@@ -408,9 +457,11 @@ The proposed acode-only block is therefore retired:
   enters through tier 2 with a `PromptTag` — never by editing SDK text.
 
 acode's assembled parent prompt is now the SDK default — identity line, v3
-body, catalog of acode's definitions (~2 KB against the 32 KiB cap) — and
-acode owns zero bytes of it. The leanness audit holds by construction:
-there is no second copy of any rule to bloat or contradict.
+body, catalog of acode's definitions (~2 KB against the 32 KiB cap) — plus,
+on a new session, the workspace's own recorded `AGENTS.md` text. acode owns
+zero bytes of *authored* prompt text: the appendix is host data. The
+leanness audit holds by construction: there is no second copy of any rule to
+bloat or contradict.
 
 ## 5. Child template
 
@@ -423,13 +474,20 @@ hatch, and the verify/report line reach every role through the shared body
 the same way. The catalog stays parent-only; the `## Your role` heading is
 kept.
 
+A fresh delegated child also composes the parent's recorded `appended_prompt`
+after its own rules and role body into its `system_prompt`, and records no
+`appended_prompt` of its own (v0.4.0). A continued child appends nothing. The
+v3 project-instructions sentence stays the fallback: a log written before the
+field has no text to pass, and the model can still read the file itself.
+
 DEC6 resolved: the project-instructions line lives in the v3 shared body, so
 read-only roles see it too. Upstream kept it there deliberately — the
 reviewer is read-only and is precisely the role that reviews against repo
 policy, so the line cannot be limited to mutating roles without defeating
-§1.4. If probes show the extra read hurting explore, acode can move the line
-into the mutating role bodies only: a role's prompt is recorded per child, so
-no second version bump would be needed.
+§1.4. With v0.4.0's seeded text the probe now measures a duplicate read rather
+than a missing one: if it still hurts explore, acode can move the line into
+the mutating role bodies only — a role's prompt is recorded per child, so no
+second version bump would be needed.
 
 ## 6. Role definitions
 
@@ -596,11 +654,13 @@ which also covers its research-flavored uses.
   no composed text to transcribe *from*: the loop invariants are inherited,
   and `LoopRules()` is the source if a tier-2 move ever needs them. A copied
   invariant is drift waiting for the next SDK bump.
-- **No `Config.Instructions`.** Reserved for genuinely host-specific
-  *additions*, of which acode has none: it carries no version of its own,
-  never reaches a child, and adds unattributed text beside the recorded
-  prompt. Product lines, if any ever appear, go in a tier-2 body with a
-  `PromptTag`.
+- **No acode-authored `Config.Instructions` text.** The one thing acode
+  passes through the prompt input is the workspace's own root `AGENTS.md`,
+  read through the workspace handle and recorded as `appended_prompt`
+  ([delegation-fidelity-build.md](delegation-fidelity-build.md) D3). That is
+  host data, not a product paragraph: it carries no acode version, is
+  attributed by the record, and reaches children by the SDK's rule. Product
+  lines, if any ever appear, go in a tier-2 body with a `PromptTag`.
 - **No repo-local review gate in the product prompt.** The trigger *classes*
   (contracts, documented behavior, multi-file) are universal, so they live
   in the shipped `reviewer` description; whether review is *mandatory* for
@@ -628,12 +688,18 @@ which also covers its research-flavored uses.
 | P1.2 | Upstream: mirror the identical text into the bundled defaults | **Dead.** The SDK ships no role text and may not reproduce these five in any form; a runnable `Example_delegation` is the starting template for bare library hosts. |
 | P2.1 | Upstream: the v3 shared body as new consts, `PromptVersionV3`, child selection by version | **Shipped upstream** (as `PromptVersion = "prompt-v3"` plus exported `PromptVersionV2`; v0/v1/v2 pinned by exact SHA-256; v2 and v3 children select their own rules, v0/v1 keep frozen). |
 | P2.2 | Upstream: the exports — body, host identity, prompt tag; the fork+`Instructions` edge | **Shipped upstream** as three primitives plus `Identity` and `PromptTag`; the fork edge is fixed (append to the recorded prompt). |
-| P3.1 | acode: a prompt builder — acode identity, SDK body, §4.5 policy — through `SystemPrompt` | **Superseded by tier 1** (§4.1): no builder, no `SystemPrompt`. The identity is set at `run.go:240`/`run.go:402`; the body and catalog are the SDK default; the §4.5 criterion went upstream. |
+| P3.1 | acode: a prompt builder — acode identity, SDK body, §4.5 policy — through `SystemPrompt` | **Superseded by tier 1** (§4.1): no builder, no `SystemPrompt`. The identity is set at `run.go:254`/`run.go:418`; the body and catalog are the SDK default; the §4.5 criterion went upstream. |
 | P3.2 | Pin the composed text; add the composition note to architecture.md | **Superseded in part.** Nothing is composed, so there is no composed-text pin; the drift alarm moved to what acode does own — the definitions pins and the task-grant pin. The architecture note landed as the role/identity ownership paragraph. |
 | P3.3 | Bump the SDK pin; run the DoD set; record verification | **Landed with the bump** (§13 records the result; probes remain pending). |
 
+Post-plan releases: v0.4.0 (2026-11-19) propagated workspace instructions and
+added `appended_prompt`, adopted by
+[delegation-fidelity-build.md](delegation-fidelity-build.md) Phase 2; v0.4.1
+(2026-11-20) restores Responses reasoning summaries with no prompt, schema,
+grant, or toolset change. §1–§2 and §5 are revised accordingly.
+
 Remaining work: the §13 probe pass, run against the tagged SDK plus this tree,
-and the two watch items (§4.5 reconciliation, §5's read-cost check for
+and the two watch items (§4.5 reconciliation, §5's duplicate-read check for
 explore). Both need a real model and fixtures, not code; the code-side gaps
 found by the post-bump audit are recorded and fixed in §13.
 
@@ -642,15 +708,19 @@ found by the post-bump audit are recorded and fixed in §13.
 1. **Landed.** A new TUI parent session records the acode prompt: the
    identity line "You are acode, a coding harness working in the workspace
    %q.", the v3 SDK body with the independence criterion, and the catalog of
-   acode's definitions. New sessions record `prompt-v3` where they recorded
+   acode's definitions — plus `appended_prompt` when the workspace has a root
+   `AGENTS.md`. New sessions record `prompt-v3` where they recorded
    `prompt-v2` before — the inherited version bump. A new batch session
-   records the same identity and body but no catalog, because batch withholds
-   `delegate` and loads no definitions. Resume replays the recorded text, and
-   a fork inherits its parent's recorded prompt, identity line included.
+   records the same identity and body with any workspace text and without a
+   catalog, because batch withholds `delegate` and loads no definitions.
+   Resume replays the recorded text, and a fork inherits its parent's
+   recorded prompt, identity line included.
 2. **Landed.** Children introduce themselves as acode agents, not aharness
    agents.
 3. **Landed upstream, inherited.** Children are told to read the workspace's
-   project instructions before acting on the code (one read per session).
+   project instructions before acting on the code; v0.4.0 also seeds the
+   recorded workspace text into every fresh child, so the sentence is a
+   fallback rather than the only channel.
 4. **Routing surface landed; behavior pending probes.** The reviewer
    description carries its trigger, the v3 paragraph carries the
    independence criterion — whether review is actually delegated before
@@ -662,15 +732,21 @@ found by the post-bump audit are recorded and fixed in §13.
    shipped in acode's own definitions; the SDK's bundled set no longer
    exists.
 7. **Fixed: `/new` starts a fresh contract.** After a resume or fork, `/new`
-   used to copy that session's replay values — prompt, prompt/toolset
-   versions, agent, and grant — into the new log, so a fresh TUI session
-   could record a pre-bump `aharness` prompt or a batch grant that withholds
-   `delegate`. `/new` now resets them and records the current contract.
+   used to copy that session's replay values — prompt, `appended_prompt`,
+   prompt/toolset versions, agent, and grant — into the new log, so a fresh
+   TUI session could record a pre-bump `aharness` prompt or a batch grant that
+   withholds `delegate`. `/new` now resets them and records the current
+   contract.
+8. **Landed 2026-11-19.** A new session records `appended_prompt` when the
+   workspace has a root `AGENTS.md`, and every fresh child inherits the text
+   in its `system_prompt` (v0.4.0). Resume and fork replay the recording; a
+   legacy log has none and relies on item 3's read rule.
 
 No CLI flag, environment variable, config key, slash command, or exit code
-changes. `-ui-json` and the transcript change only where the identity line
-and the prompt version appear, and the definitions browser labels the
-shipped rows `default` instead of `bundled`.
+changes. The session log gains the optional `appended_prompt` field (schema
+stays 2), `-ui-json` and the transcript change only where the identity line
+and the prompt version appear, and the definitions browser labels the shipped
+rows `default` instead of `bundled`.
 
 ## 10. Decisions
 
@@ -681,9 +757,10 @@ shipped rows `default` instead of `bundled`.
 | DEC3 | Transcribe the contract lines to avoid an SDK dependency? | **Never — and now moot.** Nothing is composed, so nothing is transcribed; `LoopRules()` exists for a tier-2 move. |
 | DEC4 | Role text without a prompt version bump? | **Resolved: ship without a bump.** Sessions record the resolved prompt for parents and children (§2 fact 2, verified), and a resume replays it rather than re-rendering, so pre-bump sessions replay byte-identically and only new sessions see new role text. Pinned by `TestBinaryResumeReplaysRecordedPrompt`, which compares a seeded prompt-v2 session's log and model request against its recorded text. |
 | DEC5 | Pilot before landing Phase 1? | **Retired.** `DefaultAgents` is gone, so a pilot had nothing to override; the SDK's breaks are compile-time, and the bump forced the change. |
-| DEC6 | Project-instructions read for read-only roles too? | **Resolved upstream: yes, keep it in the shared body** — the reviewer is read-only and is the role that reviews against repo policy. The split to mutating role bodies stays available with no version bump if probes show the read costing explore (§5). |
+| DEC6 | Project-instructions read for read-only roles too? | **Resolved upstream: yes, keep it in the shared body** — the reviewer is read-only and is the role that reviews against repo policy. v0.4.0's seed makes the probe a duplicate-read check rather than a missing-text check; the split to mutating role bodies stays available with no version bump if probes show the read costing explore (§5). |
 | DEC7 | Widen `reviewer` tools (`run_command` for `git diff`/tests)? | **Resolved: keep the grant read-only** (`read_file`, `search`), with the reworded body (§6). A read-only reviewer cannot report a verification it did not perform, keeps review fan-out concurrent, and matches the every-reviewer-is-read-only finding in the SDK's research; the parent hands it the diff. |
 | DEC8 | Who owns the five role definitions? | **Landed as proposed: acode ships them** (§6) — the roster is product surface (the `/agents` browser, the routing names, the operator `agent_overrides` keyed by name), and the SDK now keeps only mechanism (format, parser, caps, catalog, spawner, overrides) with no role text at all. The bundled-defaults mirroring (P1.2) is dead. |
+| DEC9 | Who supplies workspace rules: a tier-2 body, `Instructions`, or an app append? | **`Instructions` through the SDK, recorded as `appended_prompt`** (v0.4.0). The bytes are workspace data, not acode product text, so they are not a prompt body; the SDK folds, records, caps, and propagates them, and acode adds no append channel. A tier-2 body remains for genuine acode product rules. |
 
 ## 11. Risks and mitigations
 
@@ -696,18 +773,20 @@ shipped rows `default` instead of `bundled`.
 | Fork with instructions resurrects the SDK prompt | Fixed upstream in v0.3.0: a fork with instructions appends to the recorded prompt. No acode defense is needed. |
 | Role text ships without a bump and old sessions replay differently | Resolved (DEC4): sessions record resolved prompts and resume re-supplies them, so pre-bump sessions replay byte-identically; only new sessions see new role text. |
 | A description or body edit breaks the caps or the catalog render | The pin test fails on any byte change (§6), and the catalog render is the SDK's, capped at 4 KiB with the omission marker. |
+| Workspace text inflates the recorded prompt or a child inherits it twice | The 16 KiB seed cap keeps the composed prompt under the 32 KiB SDK cap; v0.4.0 records the child's own prompt without `appended_prompt`, and a continued child appends nothing; the seed tests pin one occurrence. |
+| A legacy session's children see no workspace text | Recorded behavior: the v3 read rule remains the fallback and `/new` mints a fresh contract; the delegation-fidelity plan records the legacy-log rule. |
 | Probe results are intuition, not evidence | §13 follows the SDK's evaluation research: real-model component probes, one tag per variant, traces read raw; the two production failures are the regression cases. The upstream release was cut with its probes pending, so this plan's probe pass is the outstanding evidence for both sides of the dependency. |
 
 ## 12. Test plan
 
 | Layer | Coverage |
 |---|---|
-| SDK unit (upstream, shipped) | v3 pins for all nine rule bullets and the delegation criterion; exact SHA-256 pins for v0/v1/v2; child identity for a v3 child; the tag's resume/fork rules; the fork-with-instructions append fix; the discovery seam's base/file precedence and caps. |
-| acode unit | `cmd/acode/agents_test.go`: the roster, exact descriptions and byte counts (193/191/178/189/145, cap 200), exact bodies, grants, the task-grant drift pin against `tools.NamesWithout("delegate")`, and operator-file precedence (a same-name file wins; a malformed file warns without replacing). `cmd/acode/sessions_test.go`: `/new` after a resumed pre-bump session records the current prompt, versions, identity, catalog, and a fresh grant. |
-| acode integration | The TUI parent records the acode identity line, the shipped reviewer description in the catalog, and the v3 verify/report rule; the child records the acode identity line and its role grant; a batch parent records the identity and v3 rule without a catalog; resume replays a pre-bump prompt, agent, and grant in the log and the prompt in the model request; a batch fork inherits the parent's recorded prompt and role, and a TUI fork re-supplies the parent's prompt, role, and grant into its own `session_start`. |
-| TUI | Definitions browser renders the shipped set with source `default`, operator rows with `user` and their path, and invalid rows with their parse error; discovery warnings surface as startup notices. Catalog lines come from the effective definitions. |
+| SDK unit (upstream, shipped) | v3 pins for all nine rule bullets and the delegation criterion; exact SHA-256 pins for v0/v1/v2; child identity for a v3 child; the tag's resume/fork rules; the fork-with-instructions append fix; the discovery seam's base/file precedence and caps; v0.4.0's child instruction propagation and `appended_prompt` record/replay. |
+| acode unit | `cmd/acode/agents_test.go`: the roster, exact descriptions and byte counts (193/191/178/189/145, cap 200), exact bodies, grants, the task-grant drift pin against `tools.NamesWithout("delegate")`, and operator-file precedence (a same-name file wins; a malformed file warns without replacing). `cmd/acode/workspace_instructions_test.go`: the absent/empty/normal/at-cap/over-cap/invalid-UTF-8/symlink/directory read cases and the compose/skip behavior. `cmd/acode/sessions_test.go`: `/new` after a resumed pre-bump session records the current prompt, versions, identity, catalog, and a fresh grant, and clears `AppendedPrompt`. |
+| acode integration | The TUI parent records the acode identity line, the shipped reviewer description in the catalog, the v3 verify/report rule, and the workspace `appended_prompt`; the child records the acode identity line, its role grant, and the inherited workspace text once; a batch parent records the identity and v3 rule without a catalog and folds `Spec.AppendPrompt`; resume replays a pre-bump prompt, agent, and grant in the log and the prompt in the model request; a batch fork inherits the parent's recorded prompt, role, and `appended_prompt`, and a TUI fork re-supplies the same fields into its own `session_start`. |
+| TUI | Definitions browser renders the shipped set with source `default`, operator rows with `user` and their path, and invalid rows with their parse error; discovery warnings surface as startup notices; the workspace seed warning appears as one notice. Catalog lines come from the effective definitions. |
 | Probes (real model) | §13's behaviors below — the one evidence class still missing. |
-| DoD | `make dod` after the bump (green, §13); real-provider and real-terminal smokes recorded as pending where credentials are unavailable. |
+| DoD | `make dod` after the v0.4.1 bump (green, §13); real-provider and real-terminal smokes recorded as pending where credentials are unavailable. |
 
 ## 13. Verification
 
@@ -739,9 +818,28 @@ no catalog. §4.2, §9.1, and §12 are corrected accordingly. `make dod` green:
 goimports, `go vet`, `golangci-lint` (0 issues), `go test -race -count=1
 ./...`, `go build`, `govulncheck` (no vulnerabilities), `docs-check`.
 
+**Record (2026-11-20, aharness v0.4.1 revision).** v0.4.1 is a patch release:
+the Responses adapter requests reasoning summaries, restoring thinking text
+with no public API, prompt, schema, grant, or toolset change. v0.4.0, already
+adopted, had widened `Instructions` to fresh children and added
+`appended_prompt`; acode's seed is recorded in
+[delegation-fidelity-build.md](delegation-fidelity-build.md) §8. This
+revision re-checks the plan's surfaces against v0.4.1, updates the
+`Instructions` row (§2), records that §1.4 is closed, and notes that the TUI
+still composes its own `session_start` (the engine-owned path is
+[engine-host-build.md](engine-host-build.md) P2.2). Delegation-fidelity Phase 1
+later replaced the §6 `researcher` trigger with a 186-byte line; the frozen
+§6/§8/§12 proposal and its 178-byte count stand as filed, and
+[delegation-fidelity-build.md](delegation-fidelity-build.md) §3.1/§8 carry the
+shipped text.
+`make dod` green: goimports, `go vet`, `golangci-lint` (0 issues),
+`go test -race -count=1 ./...`, `go build`, `govulncheck` (no
+vulnerabilities), `docs-check`. Probes 1–4 remain pending for lack of a real
+model and fixtures.
+
 **Pending: the probe pass.** The upstream release was tagged with its
-§7.2 probes unrun, and this bump inherits that gap: probes 1 and 2 below
-are the outstanding evidence for the routing change, and they must run
+§7.2 probes unrun, and the v0.3.0 bump inherited that gap: probes 1 and 2
+below are the outstanding evidence for the routing change, and they must run
 against the tagged SDK plus this tree, holding model, effort, and fixture
 constant, reading the traces raw. Record outcomes here per behavior:
 
@@ -752,21 +850,23 @@ constant, reading the traces raw. Record outcomes here per behavior:
 2. **Verified vs. unverified claims.** Does the final report distinguish
    them? The two falsely-claimed-fixed findings in §1.1 are the regression
    cases (upstream's pending probe 2).
-3. **Composition mechanics — mostly automated now.** Recorded prompts are
-   asserted by test (identity lines, v3 body, catalog; resume replays).
-   The residual probe is obedience, not mechanics: do children actually
-   read the workspace rules, and does a fork of a pre-bump session behave
-   as its recorded contract says?
-4. **Read-only cost.** Does the project-instructions read cost explore more
-   than it buys (DEC6's follow-up)? If yes, move the line into the mutating
-   role bodies — no version bump needed (§5).
+3. **Composition mechanics — automated except obedience.** Recorded prompts
+   are asserted by test (identity lines, v3 body, catalog, `appended_prompt`;
+   resume replays). The residual probe is obedience: does a child follow the
+   seeded workspace rules without re-reading, and does a fork of a pre-bump
+   session behave as its recorded contract says?
+4. **Duplicate-read cost.** Does the project-instructions read still cost
+   explore now that the text is in its prompt (DEC6's follow-up)? If yes,
+   move the line into the mutating role bodies — no version bump needed (§5).
+   The delegation-fidelity plan's R2 probe is the obedience half; this is the
+   cost half.
 
 ## 14. Open questions
 
 1. ~~DEC7: widen `reviewer` tools?~~ Resolved: keep the grant read-only (§6).
 2. ~~DEC6: shared project-instructions read, or mutating roles only?~~
-   Resolved upstream: shared. The read-cost check for explore remains a
-   probe (§13.4).
+   Resolved upstream: shared. v0.4.0's seed makes the remaining check a
+   duplicate-read cost probe (§13.4).
 3. ~~The 200-byte description cap?~~ Kept upstream; the five shipped
    descriptions fit with room to spare, and the pin test fails on growth
    past 200.
@@ -780,15 +880,26 @@ constant, reading the traces raw. Record outcomes here per behavior:
 7. **The reconciliation line** (§4.5) has no v3 counterpart. Watch for a
    mishandled fan-out conflict in probe traces; if one appears, add it
    through tier 2 with a `PromptTag`, not by editing SDK text.
+8. **Does a seeded child still read `AGENTS.md`?** v0.4.0 makes the text
+   present, so the delegation-fidelity plan's R2 probe covers obedience and
+   §13.4 covers the duplicate read. No code change until either observes a
+   cost.
 
 ## 15. Sources
 
-Principles and exclusions in §3 trace to (accessed 2026-11-19):
+Principles and exclusions in §3 trace to (accessed 2026-11-19; release
+records checked 2026-11-20):
 
 - aharness v0.3.0 — CHANGELOG ("the prompt-surface release") and
   `docs/plans/prompt-surface-build.md` (the upstream implementation plan;
   §1.7 fixes acode's tier, Appendix A is the role-content handoff, §12
   records its pending probes). In the aharness repository, not on the web.
+- aharness v0.4.0 and v0.4.1 — CHANGELOG entries (workspace instructions,
+  `appended_prompt`, the removed `AppendSystemPrompt`, and the restored
+  Responses reasoning summaries) and
+  `docs/plans/workspace-instructions-build.md`. In the aharness repository.
+- [delegation-fidelity-build.md](delegation-fidelity-build.md) — acode's
+  adoption of the v0.4.0 workspace-instruction input (D3, D6; §3.2; §8).
 - Anthropic — Claude prompting best practices: <https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices>
 - Anthropic — Effective context engineering for AI agents (Oct 2025): <https://www.anthropic.com/research/effective-context-engineering-for-ai-agents>
 - Anthropic — How we built our multi-agent research system (Jun 2025): <https://www.anthropic.com/research/multi-agent-research-system>

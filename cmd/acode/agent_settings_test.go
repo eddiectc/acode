@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/eddiectc/aharness/agent"
-	"github.com/eddiectc/aharness/tools"
 )
 
 func settingsStr(value string) *string { return &value }
@@ -218,18 +217,11 @@ func TestTUIHostSavesAgentOverrides(t *testing.T) {
 func TestTUIHostRefusesWorkspaceConfig(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
-	ws, err := tools.OpenWorkspace(workspace)
-	if err != nil {
-		t.Fatalf("OpenWorkspace: %v", err)
-	}
-	t.Cleanup(func() { _ = ws.Close() })
+	host, _ := newSessionHost(t, t.TempDir(), workspace)
 	path := filepath.Join(workspace, "config.json")
-	host := &tuiHost{
-		cfg:        config{ConfigPath: path},
-		baseAgents: agent.LoadAgents(testDefaultDefinitions(t), t.TempDir()),
-		ws:         ws,
-	}
-	err = host.SetAgentOverride("reviewer", agent.AgentOverride{Model: settingsStr("m")})
+	host.cfg.ConfigPath = path
+	host.baseAgents = agent.LoadAgents(testDefaultDefinitions(t), t.TempDir())
+	err := host.SetAgentOverride("reviewer", agent.AgentOverride{Model: settingsStr("m")})
 	if err == nil || !strings.Contains(err.Error(), "workspace") {
 		t.Fatalf("workspace config save = %v, want a refusal", err)
 	}
@@ -246,16 +238,9 @@ func TestTUIHostRefusesSymlinkedWorkspaceConfig(t *testing.T) {
 	if err := os.Symlink(workspace, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	ws, err := tools.OpenWorkspace(workspace)
-	if err != nil {
-		t.Fatalf("OpenWorkspace: %v", err)
-	}
-	t.Cleanup(func() { _ = ws.Close() })
-	host := &tuiHost{
-		cfg:        config{ConfigPath: filepath.Join(link, "config.json")},
-		baseAgents: agent.LoadAgents(testDefaultDefinitions(t), t.TempDir()),
-		ws:         ws,
-	}
+	host, _ := newSessionHost(t, t.TempDir(), workspace)
+	host.cfg.ConfigPath = filepath.Join(link, "config.json")
+	host.baseAgents = agent.LoadAgents(testDefaultDefinitions(t), t.TempDir())
 	if err := host.SetAgentOverride("reviewer", agent.AgentOverride{Model: settingsStr("m")}); err == nil ||
 		!strings.Contains(err.Error(), "workspace") {
 		t.Fatalf("symlinked workspace config save = %v, want a refusal", err)

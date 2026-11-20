@@ -26,39 +26,55 @@ const (
 )
 
 // prepareRunLocked resolves the next-run model and thinking effort against the
-// loaded catalog. An explicit picker/option value replaces the inherited effort;
-// either way, a value the effective catalog model does not advertise is cleared
-// with a notice so the provider default is used instead of sending an
-// unsupported field.
-func (h *tuiHost) prepareRunLocked(opts tui.RunOptions, warn func(string)) (string, model.Dialect, error) {
+// loaded catalog and stores them in the per-run selection. An explicit
+// picker/option value replaces the inherited effort; either way, a value the
+// effective catalog model does not advertise is cleared with a notice so the
+// provider default is used instead of sending an unsupported field. The
+// session contract is never rewritten.
+func (h *tuiHost) prepareRunLocked(opts tui.RunOptions, warn func(string)) error {
+	sel := h.next
 	modelName := opts.Model
 	if modelName == "" {
-		modelName = h.info.Model
+		modelName = sel.model
 	}
 	if modelName == "" {
 		modelName = h.cfg.Model
 	}
-	if modelName != h.cfg.Model {
+	if modelName != sel.model {
 		m, ok := h.catalog.Models[modelName]
 		if !ok {
-			return "", "", fmt.Errorf("model %q is not in the loaded catalog", modelName)
+			return fmt.Errorf("model %q is not in the loaded catalog", modelName)
 		}
-		if err := applyCatalogModel(&h.cfg, m, warn); err != nil {
-			return "", "", err
+		cfg := h.cfg
+		if err := applyCatalogModel(&cfg, m, warn); err != nil {
+			return err
 		}
-		h.cfg.Pricing = catalogPrice(h.catalog, modelName)
+		cfg.Pricing = catalogPrice(h.catalog, modelName)
 		if m.Deprecated {
 			warn("model " + m.ID + " is deprecated")
 		}
-		if err := validateEffective(&h.cfg); err != nil {
-			return "", "", err
+		if err := validateEffective(&cfg); err != nil {
+			return err
+		}
+		sel = runSelection{
+			model:   cfg.Model,
+			dialect: cfg.Dialect,
+			baseURL: cfg.BaseURL,
+			limits:  cfg.Limits,
+			pricing: cfg.Pricing,
+			effort:  sel.effort,
 		}
 	}
-	resolveRunThinkingEffort(&h.cfg, h.catalog.Models, modelName, opts, warn)
-	return modelName, h.cfg.Dialect, nil
+	resolveRunThinkingEffort(&sel, h.catalog.Models, modelName, opts, warn)
+	h.next = sel
+	h.info.Model = sel.model
+	h.info.Dialect = string(sel.dialect)
+	h.info.ContextLimit = sel.limits.MaxContextTokens
+	return nil
 }
 
-// sessionSwitchReadyLocked reports whether the host can replace its store.
+// sessionSwitchReadyLocked reports whether the host can replace its engine
+// host.
 func (h *tuiHost) sessionSwitchReadyLocked() error {
 	if h.closed {
 		return errors.New("session host is closed")
@@ -80,15 +96,82 @@ func (h *tuiHost) rebuildModelsLocked() {
 	h.setCatalogLocked(h.catalog)
 }
 
-// sessionInfo builds the immutable TUI header for a store and its reconstructed
+// tuiSessionPolicy runs the app-owned part of session opening, exactly as batch
+// does: inspect the recorded state, load a catalog only when an explicit model
+// or effort needs it, then apply the resume/fork defaults and the task rules.
+// It returns the exit code the same failure would produce at startup and the
+// failure itself; the caller decides whether to print or surface it.
+func tuiSessionPolicy(ctx context.Context, cfg *config, id string, warn func(string)) (model.CatalogSource, int, error) {
+	snapshot, err := engine.Inspect(ctx, cfg.StateDir, id)
+	if err != nil {
+		return nil, engineExitCode(err), err
+	}
+	state := snapshot.State
+	if len(state.CustomTools) > 0 {
+		return nil, exitConfig, fmt.Errorf("session %s records caller-defined tools; the TUI cannot provide their implementations", id)
+	}
+	source, err := sessionCatalogSource(*cfg)
+	if err != nil {
+		return nil, exitConfig, err
+	}
+	if err := applySessionDefaults(ctx, cfg, state, source, warn); err != nil {
+		return nil, catalogExitCode(err), err
+	}
+	if err := validateSessionRules(cfg, state); err != nil {
+		return nil, exitConfig, err
+	}
+	return source, 0, nil
+}
+
+// sessionSnapshotLocked installs a freshly opened engine host as the active
+// session and returns the state the TUI needs. The caller holds h.mu. The old
+// host is closed only after the new one is fully readable, so a failed switch
+// leaves the current session intact.
+func (h *tuiHost) sessionSnapshotLocked(host *engine.Host, notes []string) (tui.SessionSnapshot, error) {
+	cfg := h.cfg
+	resolved := host.Spec()
+	applyResolvedSpec(&cfg, resolved)
+	state, err := host.State()
+	if err != nil {
+		_ = host.Close()
+		return tui.SessionSnapshot{}, fmt.Errorf("read session %s: %w", sanitizeText(host.ID()), err)
+	}
+	history, err := host.History()
+	if err != nil {
+		_ = host.Close()
+		return tui.SessionSnapshot{}, fmt.Errorf("read session %s: %w", sanitizeText(host.ID()), err)
+	}
+	old := h.host
+	h.host = host
+	h.cfg = cfg
+	h.next = selectionFromSpec(resolved)
+	h.info = sessionInfo(cfg, host, state)
+	h.lastSpawner = nil
+	h.lastStatus = ""
+	h.lastReason = ""
+	h.pendingWarning = ""
+	h.rebuildModelsLocked()
+	notices := notes
+	if err := old.Close(); err != nil {
+		notices = append(notices, "close previous session: "+sanitizeText(err.Error()))
+	}
+	return tui.SessionSnapshot{
+		Info:    h.info,
+		History: history,
+		Models:  append([]tui.ModelChoice(nil), h.models...),
+		Notices: notices,
+	}, nil
+}
+
+// sessionInfo builds the TUI header for an engine host and its reconstructed
 // state.
-func sessionInfo(cfg config, store *session.Store, state agent.State) tui.Info {
+func sessionInfo(cfg config, host *engine.Host, state agent.State) tui.Info {
 	return tui.Info{
-		SessionID:      store.ID(),
-		TracePath:      store.Path(),
+		SessionID:      host.ID(),
+		TracePath:      host.Path(),
 		Model:          cfg.Model,
 		Dialect:        string(cfg.Dialect),
-		Workspace:      cfg.Workspace,
+		Workspace:      host.Workspace(),
 		MaxTurns:       cfg.MaxTurns,
 		MaxTotalTokens: cfg.MaxTotalTokens,
 		Turns:          state.Turns,
@@ -110,12 +193,13 @@ func (h *tuiHost) ListSessions() ([]tui.PreviousSession, error) {
 	if h.closed {
 		return nil, errors.New("session host is closed")
 	}
-	return listPreviousSessions(h.cfg.StateDir, h.ws.Dir(), h.sessionID)
+	return listPreviousSessions(h.host.StateDir(), h.host.Workspace(), h.host.ID())
 }
 
 // NewSession replaces the current session with a fresh log in the same state
-// directory and workspace. It records the supplied next-run settings in the new
-// session_start.
+// directory and workspace. It records the supplied next-run settings and reads
+// the workspace instructions once, through the engine, so the new contract
+// carries them exactly as a started-from-scratch TUI session does.
 func (h *tuiHost) NewSession(opts tui.RunOptions) (tui.SessionSnapshot, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -124,68 +208,36 @@ func (h *tuiHost) NewSession(opts tui.RunOptions) (tui.SessionSnapshot, error) {
 	}
 	var warnings []string
 	warn := func(text string) { warnings = append(warnings, text) }
-	if _, _, err := h.prepareRunLocked(opts, warn); err != nil {
+	previousNext, previousInfo := h.next, h.info
+	if err := h.prepareRunLocked(opts, warn); err != nil {
 		return tui.SessionSnapshot{}, err
 	}
-	cfg := h.cfg
+	instructions := workspaceInstructionsForNewSession(h.host.WorkspaceHandle(), warn)
+	cfg := h.effectiveConfigLocked()
 	cfg.ResumeID = ""
 	cfg.ForkID = ""
 	// A new session starts a fresh contract. The prompt, versions, agent, and
 	// grant on h.cfg are replay values inherited from whichever session was
 	// resumed or forked last; carrying them here would make /new record a
 	// session contract it never ran — a pre-bump prompt and version, or a
-	// batch grant that withholds delegate from a TUI session.
+	// batch grant that withholds delegate from a TUI session. The engine
+	// records the current defaults and the workspace text.
 	cfg.PromptVersion = agent.PromptVersion
 	cfg.ToolsetVersion = tools.Version
-	cfg.SystemPrompt = ""
-	cfg.AppendedPrompt = ""
 	cfg.Agent = ""
-	cfg.Tools = nil
-	// /new mints a fresh contract, so it reads the workspace instructions once
-	// and records them before the session_start write. A resumed or forked
-	// legacy log also starts with an empty prompt, which is why the seed lives
-	// at this site rather than behind an empty-prompt check in a shared helper.
-	if warning := seedWorkspaceInstructions(&cfg, h.ws); warning != "" {
-		warnings = append(warnings, warning)
-	}
-	store, err := session.CreateNew(cfg.StateDir)
+	host, err := engine.Open(context.Background(), tuiEngineSpec(cfg, engine.ModeNew, "", instructions, h.agents))
 	if err != nil {
-		return tui.SessionSnapshot{}, fmt.Errorf("create session log: %w", err)
-	}
-	if err := agent.WriteSessionStart(store, runnerConfig(cfg), nil); err != nil {
-		_ = store.Close()
+		h.next, h.info = previousNext, previousInfo
 		return tui.SessionSnapshot{}, err
 	}
-	history, err := agent.History(store.Events())
-	if err != nil {
-		_ = store.Close()
-		return tui.SessionSnapshot{}, fmt.Errorf("read new session: %w", err)
-	}
-	old := h.store
-	h.cfg = cfg
-	h.store = store
-	h.sessionID = store.ID()
-	h.info = sessionInfo(cfg, store, agent.State{})
-	h.lastSpawner = nil
-	h.lastStatus = ""
-	h.lastReason = ""
-	h.pendingWarning = ""
-	h.rebuildModelsLocked()
-	notices := warnings
-	if err := old.Close(); err != nil {
-		notices = append(notices, "close previous session: "+sanitizeText(err.Error()))
-	}
-	return tui.SessionSnapshot{
-		Info:    h.info,
-		History: history,
-		Models:  append([]tui.ModelChoice(nil), h.models...),
-		Notices: notices,
-	}, nil
+	return h.sessionSnapshotLocked(host, warnings)
 }
 
 // ResumeSession replaces the current session with a previous session recorded
-// for the same workspace. The current store is closed only after the target has
-// been validated, so a failed resume leaves the active session untouched.
+// for the same workspace. The target is validated and fully opened before the
+// current host is closed, so a failed resume leaves the active session
+// untouched. The recorded model, effort, prompt, and grant are replayed
+// exactly; only the next run's selection starts from them.
 func (h *tuiHost) ResumeSession(id string) (tui.SessionSnapshot, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -196,23 +248,8 @@ func (h *tuiHost) ResumeSession(id string) (tui.SessionSnapshot, error) {
 	if err != nil {
 		return tui.SessionSnapshot{}, fmt.Errorf("resume session: %w", err)
 	}
-	if canonical == h.sessionID {
+	if canonical == h.host.ID() {
 		return tui.SessionSnapshot{}, errors.New("session is already active")
-	}
-	store, err := session.Open(h.cfg.StateDir, canonical)
-	if err != nil {
-		return tui.SessionSnapshot{}, err
-	}
-	events := store.Events()
-	state, err := agent.Inspect(events)
-	if err != nil {
-		_ = store.Close()
-		return tui.SessionSnapshot{}, fmt.Errorf("read session %s: %w", sanitizeText(canonical), err)
-	}
-	if state.Workspace != h.ws.Dir() {
-		_ = store.Close()
-		return tui.SessionSnapshot{}, fmt.Errorf("session workspace %s does not match %s",
-			sanitizeText(state.Workspace), sanitizeText(h.ws.Dir()))
 	}
 	cfg := h.cfg
 	cfg.ResumeID = canonical
@@ -225,37 +262,20 @@ func (h *tuiHost) ResumeSession(id string) (tui.SessionSnapshot, error) {
 	if !cfg.baseURLSet {
 		cfg.BaseURL = ""
 	}
+	// The switch stays in this process's workspace; the engine rejects a
+	// target recorded elsewhere.
+	cfg.Workspace = h.host.Workspace()
+	cfg.workspaceSet = true
 	var warnings []string
 	warn := func(text string) { warnings = append(warnings, text) }
-	if err := applySessionDefaults(context.Background(), &cfg, state, h.source, warn); err != nil {
-		_ = store.Close()
+	if _, _, err := tuiSessionPolicy(context.Background(), &cfg, canonical, warn); err != nil {
 		return tui.SessionSnapshot{}, err
 	}
-	history, err := agent.History(events)
+	host, err := engine.Open(context.Background(), tuiEngineSpec(cfg, engine.ModeResume, canonical, "", h.agents))
 	if err != nil {
-		_ = store.Close()
-		return tui.SessionSnapshot{}, fmt.Errorf("read session %s: %w", sanitizeText(canonical), err)
+		return tui.SessionSnapshot{}, err
 	}
-	old := h.store
-	h.cfg = cfg
-	h.store = store
-	h.sessionID = store.ID()
-	h.info = sessionInfo(cfg, store, state)
-	h.lastSpawner = nil
-	h.lastStatus = ""
-	h.lastReason = ""
-	h.pendingWarning = ""
-	h.rebuildModelsLocked()
-	notices := warnings
-	if err := old.Close(); err != nil {
-		notices = append(notices, "close previous session: "+sanitizeText(err.Error()))
-	}
-	return tui.SessionSnapshot{
-		Info:    h.info,
-		History: history,
-		Models:  append([]tui.ModelChoice(nil), h.models...),
-		Notices: notices,
-	}, nil
+	return h.sessionSnapshotLocked(host, warnings)
 }
 
 // listPreviousSessions lists the sessions recorded for workspace. The SDK owns

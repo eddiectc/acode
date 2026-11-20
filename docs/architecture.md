@@ -52,9 +52,8 @@ the SDK workspace handle (`tools.Workspace.ReadDisplayFile`), which applies the
 same path policy as the file tools: a workspace-relative path, no symlink
 components, no `.git` component, and a regular file. The read is capped at 16
 KiB. The bytes are invalid-UTF-8 sanitized and passed to the SDK's prompt input:
-batch sets `engine.Spec.AppendPrompt`, whose engine folds the text after the
-rendered prompt and records it; the TUI composes the same `"\n\n"` join itself
-with `agent.RenderSystemPrompt`, because it writes its own `session_start`.
+both batch and the TUI set `engine.Spec.AppendPrompt`, and the engine folds the
+text after the rendered prompt and records it.
 
 Both fields are recorded once in `session_start`: `system_prompt` is the exact
 prompt the model saw, and `appended_prompt` is the workspace text that was
@@ -86,6 +85,7 @@ Makefile
 cmd/acode/
   main.go              # os.Exit(run())
   run.go               # mode selection, batch engine wiring, exit codes
+  engine.go            # engine spec inputs, per-run selection, completer factory
   config.go            # flags, environment, validation, discovery resolution
   fileconfig.go        # optional JSON config file: schema, load, layered resolution
   config_settings.go   # /settings read/write model
@@ -93,10 +93,10 @@ cmd/acode/
   control.go           # operation controller and batch signal delivery
   agents.go            # acode identity and the five embedded role definitions
   agents/*.md          # the shipped roles; operator files override them by name
-  workspace_instructions.go # root AGENTS.md reader and new-session prompt seed
+  workspace_instructions.go # root AGENTS.md reader for a new session
   models.go            # catalog wiring and list/refresh actions
-  sessions.go          # session selection and metadata helpers
-  tui.go               # TUI host, session shell, -ui-json wiring, summary
+  sessions.go          # session switching, TUI open policy, and metadata helpers
+  tui.go               # TUI host over engine.Host, -ui-json wiring, summary
   textsink.go          # streamed stdout newline handling
   version.go           # build metadata
 internal/tui/
@@ -121,11 +121,11 @@ scripts/
 docs/
 ```
 
-`cmd/acode` is wiring and I/O: parse, validate, choose a mode, open a session,
-start a run, render the result, and map failures to exit codes. It does not
-implement the loop or tools. `internal/tui` is a display-only front end over the
-same engine, registry, and store; it adds no durable event type and no schema
-version.
+`cmd/acode` is wiring and I/O: parse, validate, choose a mode, open a session
+through `engine.Open`, start a run through the host, render the result, and map
+failures to exit codes. It does not implement the loop or tools. `internal/tui`
+is a display-only front end over the host's engine-built runner, registry, and
+store; it adds no durable event type and no schema version.
 
 ## 3. Composition
 
@@ -135,29 +135,53 @@ version.
 `ModeResume`, or `ModeFork`, then calls `Host.BuildRunner` with a display
 callback that writes streamed text through `textsink` and tool/notice activity
 through the batch renderer. The runner and the session store are the same ones
-the TUI uses. A new or forked batch session records a tool grant without
-`delegate`; a resumed session keeps its recorded contract, and batch configures
-no spawner, so `delegate` can only return `unavailable` even when the recorded
-grant offers it.
+the TUI uses. A new or forked batch session records the full toolset as its
+session grant and narrows only the root through `root_tools`: every tool of the
+recorded version except `delegate`. The recorded root grant is inherited by
+resume, so a session first created by batch is permanently non-delegating, in
+batch or in the TUI. A resumed session keeps its recorded contract, and batch
+configures no spawner, so `delegate` can only return `unavailable` even when
+the recorded grant offers it.
 
 ### TUI host
 
-`tuiHost` in `cmd/acode/tui.go` implements the consumer-side `tui.Host` and
-`tui.Run` interfaces over:
+`tuiHost` in `cmd/acode/tui.go` implements the consumer-side `tui.Host`,
+`tui.SessionManager`, and the optional capability interfaces over one
+`engine.Host`. The engine host owns the durable session store and lock, the
+workspace handle, the per-session work directory, and the resolved contract:
+prompt, appended prompt, prompt and toolset versions, agent, and grants.
+`tuiHost` owns only app policy and display state: the config, the loaded
+catalog and source, the shipped and operator agent definitions and overrides,
+and the session header.
 
-- `session.Store` for the active log and its exclusive lock;
-- `tools.Workspace` for the approved workspace root;
-- the resolved model adapter for the selected dialect;
-- `agent.Runner` for one run at a time;
-- `agent.Spawner` for delegated children;
-- the catalog source for the model picker and refresh.
+Opening a session follows the batch path. `engine.Inspect` reads the recorded
+state without taking the lock, app policy runs (`applySessionDefaults`,
+`validateSessionRules`, the custom-tool refusal), and `engine.Open` validates
+and records the contract. A new TUI session reads the workspace-root
+`AGENTS.md` and passes it as `Spec.AppendPrompt`; the engine renders the prompt,
+folds and caps the text, records `system_prompt` and `appended_prompt`, and
+propagates the text to fresh children. Resume and fork replay the recorded
+contract; a fork records `contract_override` when the engine finds the prompt
+or tools differ. `Spec.Identity` is `acode`, `Spec.PromptTag` stays unset under
+tier 1, and `Spec.UserAgent` is the acode user agent.
 
-The TUI calls `Host.Start` for each submitted message. While a run is active,
-the composer becomes a steering input; `Esc` interrupts the in-flight model or
-tool operation and a second `Ctrl-C` cancels the run. Idle `/new` and `/resume`
-replace the active session only after the target has been validated, so a
-failure leaves the current session intact. `/fork` is resolved through the
-engine and creates a self-contained copy.
+`Host.Start` builds each run with `Host.BuildRunnerWithSpawner` and an
+`engine.RunSpec` carrying the per-run model choice: model, dialect, base URL,
+limits, pricing, and thinking effort. That choice lives in `runSelection`; the
+model picker and a next-run effort change it and the header context limit, never
+the session contract. The engine builds the registry, spawner, root grant, todo
+seed, and work directories for the run. A session first created by batch records
+a full session grant and a root grant without `delegate`, so a TUI resume of it
+cannot delegate; a TUI-created session records no root grant and stays
+delegating.
+
+While a run is active, the composer becomes a steering input; `Esc` interrupts
+the in-flight model or tool operation and a second `Ctrl-C` cancels the run. The
+engine recreates the work tree at each run start and removes it when the run
+ends; `Host.Close` removes it at process end. Idle `/new` and `/resume` open the
+new `engine.Host` and read its history and counters before closing the old one,
+so a failed switch leaves the active session intact. A startup `-fork` is
+resolved through the same engine path and creates a self-contained copy.
 
 ### Headless `-ui-json`
 

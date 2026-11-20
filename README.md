@@ -169,8 +169,12 @@ Child input and output tokens count against `-max-total-tokens`. Child turns do
 not count against `-max-turns`, but seed the child's default cap.
 `-max-subagents` (default 8, `0` unlimited) bounds fresh children per run. A
 session's tool grant is fixed for its lifetime, so delegation requires a
-session whose grant includes the `delegate` tool. In `-batch`, the grant omits
-`delegate`, because an unattended run has no way to observe or steer children.
+session whose grant includes the `delegate` tool. A session first created by
+`-batch` records the full toolset as its session grant and narrows only the
+root through `root_tools`, which omits `delegate`; it is therefore permanently
+non-delegating, even if a TUI resumes it later, because an unattended run has
+no way to observe or steer children. A session created by the TUI records no
+root grant and stays delegating.
 
 ## Batch and headless modes
 

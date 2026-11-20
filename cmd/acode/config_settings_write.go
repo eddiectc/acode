@@ -41,10 +41,8 @@ func (h *tuiHost) SetSetting(key, value string) error {
 	switch key {
 	case tui.SettingRich:
 		h.cfg.UIRich = liveBool
-		h.cfg.uiRichSet = true
 	case tui.SettingExpandAll:
 		h.cfg.UIExpandAll = liveBool
-		h.cfg.uiExpandSet = true
 	}
 	return nil
 }
@@ -63,10 +61,8 @@ func (h *tuiHost) ResetSetting(key string) error {
 	switch key {
 	case tui.SettingRich:
 		h.cfg.UIRich = true
-		h.cfg.uiRichSet = false
 	case tui.SettingExpandAll:
 		h.cfg.UIExpandAll = false
-		h.cfg.uiExpandSet = false
 	}
 	return nil
 }
@@ -79,7 +75,7 @@ func (h *tuiHost) updateConfigFile(mutate func(*fileConfig) (bool, error)) (bool
 	if path == "" {
 		return false, errors.New(`the config file is disabled (-config ""); settings cannot be saved`)
 	}
-	if withinWorkspace(h.ws, path) {
+	if withinWorkspace(h.workspaceRoot(), path) {
 		return false, errors.New("the config file is inside the workspace; settings are operator state and are never written there")
 	}
 	file, err := loadFileConfig(path, false)
@@ -119,7 +115,7 @@ func (h *tuiHost) applyConfigSetting(file *fileConfig, key, value string) error 
 		if strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl) {
 			return errors.New("model must not contain whitespace or control characters")
 		}
-		if len(h.catalog.Models) > 0 && value != h.cfg.Model {
+		if len(h.catalog.Models) > 0 && value != h.next.model {
 			m, ok := h.catalog.Models[value]
 			if !ok {
 				return fmt.Errorf("model %q is not in the loaded catalog", value)
@@ -228,7 +224,7 @@ func (h *tuiHost) applyConfigSetting(file *fileConfig, key, value string) error 
 			return fmt.Errorf("invalid thinking effort %q: must match [a-z][a-z0-9_-]* and be at most %d bytes",
 				value, model.MaxThinkingEffortBytes)
 		}
-		modelID := h.cfg.Model
+		modelID := h.next.model
 		if file.Model != nil {
 			modelID = *file.Model
 		}

@@ -440,7 +440,7 @@ func (m *App) openDetailsOverlay() tea.Cmd {
 		"thinking effort: " + effortLabel(m.nextEffort),
 		"turns:      " + formatTurnBudget(m.info.Turns, m.info.MaxTurns),
 		"tokens:     " + formatTokenBudget(m.info.Usage.Total(), m.info.MaxTotalTokens),
-		"ctx:        " + formatTokenBudget(m.info.ContextTokens, m.contextLimit()),
+		"ctx:        " + formatTokenBudget(m.info.ContextTokens, m.info.ContextLimit),
 		"cost:       " + formatCostMicroUSD(m.info.CostMicroUSD, m.info.CostComplete),
 		"run:        " + fmt.Sprintf("%d", m.run.number),
 		"",
@@ -1150,6 +1150,15 @@ func (m *App) chooseModel(choice ModelChoice) tea.Cmd {
 		if provider, ok := m.host.(ModelWarningProvider); ok {
 			warning = provider.TakeModelWarning()
 		}
+		// The host resolved the effective limit, which can be clamped below
+		// the catalog window; the header ratio updates immediately even though
+		// the selection applies to the next run only.
+		if info := m.host.Info(); info.ContextLimit > 0 {
+			m.info.ContextLimit = info.ContextLimit
+		}
+	} else if selected.ContextWindow > 0 {
+		// A host without the optional selector cannot know a clamped limit.
+		m.info.ContextLimit = selected.ContextWindow
 	}
 	m.nextModel = selected.ID
 	m.nextDialect = selected.Dialect

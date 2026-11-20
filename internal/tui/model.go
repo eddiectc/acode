@@ -123,13 +123,18 @@ type steerEntry struct {
 }
 
 type liveRun struct {
-	active        bool
-	handle        Run
-	number        int
+	active bool
+	handle Run
+	number int
+	// runID is the SDK's per-run identifier from RunStarted. It is the stale
+	// event key: a numeric channel tag alone cannot tell two runs apart once
+	// the host reuses a slot.
+	runID         string
 	model         string
 	dialect       string
 	state         UIState
 	turn          int
+	attempt       int
 	turns         int
 	contextTokens int
 	started       time.Time
@@ -140,7 +145,6 @@ type liveRun struct {
 	finished      bool
 	closed        bool
 	draining      bool
-	eventsClosed  bool
 	readPending   bool
 	doneResult    *agent.Result
 	events        chan agent.DisplayEvent
