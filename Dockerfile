@@ -2,6 +2,12 @@
 
 # acode container image.
 #
+# This file does not compile acode. It copies the linux binary that the Release
+# workflow built into dist/linux/<arch>/acode, so the image, the release
+# tarballs, and the version `acode -version` reports all come from one build and
+# one Go toolchain. Build the binary first with `make dist`, or let the workflow
+# do it; see docs/container.md section 6.
+#
 # The image carries acode plus the runtime it needs to act on a workspace:
 # /bin/sh (the SDK's run_command is literally `/bin/sh -c`), git, and CA
 # certificates. It does not carry a project toolchain: derive an image from
@@ -13,34 +19,19 @@
 # container user and can reach anything the container can. Isolation comes
 # from the mounts, the user, and the network, not from acode.
 
-ARG GO_IMAGE=golang:1.27.4-trixie
 ARG RUNTIME_IMAGE=debian:trixie-slim
 
-# Build on the native runner platform and cross-compile: Go needs no
-# emulation to target another architecture, so a multi-arch build stays fast.
-FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
-
-ARG TARGETOS
-ARG TARGETARCH
-# Stamped into the binary because the build context excludes .git and has no
-# VCS metadata to derive a version from.
-ARG VERSION=devel
-
-WORKDIR /src
-
-# Resolve modules in their own layer so source edits do not re-download them.
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY . .
-
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
-    go build -trimpath -buildvcs=false \
-    -ldflags "-X main.version=${VERSION}" \
-    -o /out/acode ./cmd/acode
-
+# The tag lives in the ARG default above, which hadolint cannot see through;
+# callers pin a digest when they need one.
+# hadolint ignore=DL3006
 FROM ${RUNTIME_IMAGE}
 
+# TARGETARCH selects the binary for the platform being built. BuildKit defines
+# it; the classic builder leaves it empty, so this file needs BuildKit, which
+# the syntax line above already requires.
+ARG TARGETARCH
+# Stamped into that binary by the build that produced it, and repeated here for
+# the image label only. The binary, not this file, decides what -version says.
 ARG VERSION=devel
 ARG REVISION=unknown
 # The container user. Rootless Podman maps the caller onto these IDs with
@@ -77,7 +68,9 @@ RUN apt-get update \
  && install -d -o "${UID}" -g "${GID}" -m 0755 /home/acode/.cache/go-build \
  && install -d -o "${UID}" -g "${GID}" -m 0755 /home/acode/go/pkg/mod
 
-COPY --from=build /out/acode /usr/local/bin/acode
+# --chmod because an artifact download does not preserve the executable bit,
+# so the file arrives as 0644. See .github/workflows/release.yml.
+COPY --chmod=0755 dist/linux/${TARGETARCH}/acode /usr/local/bin/acode
 COPY LICENSE /usr/share/doc/acode/LICENSE
 
 # The default workspace is the mount point. Override it with -w to keep the

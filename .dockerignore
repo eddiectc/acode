@@ -1,18 +1,27 @@
 # Build context for the acode image.
 #
-# Keep this list narrow: the image needs go.mod, go.sum, cmd/, and internal/
-# only. Do not exclude Markdown wholesale with a recursive pattern —
-# cmd/acode/agents/*.md is compiled into the binary through //go:embed and a
-# missing file breaks the build.
+# The image no longer compiles acode: it copies the prebuilt linux binary at
+# dist/linux/<arch>/acode and LICENSE, so every source path is excluded here.
+# Run `make dist` (or the Release workflow) before building the image.
+#
+# dist/ is the one input and must stay in the context. Release tarballs must
+# not: they only exist after packaging and would be sent to the builder for
+# nothing.
 .git
 .github
 .golangci.yml
 .issues
 bin
+cmd
 docs
+internal
 scripts
+go.mod
+go.sum
+release
+*.tar.gz
 
-# Root-level prose and local editor state are not inputs to the build.
+# Root-level prose and local editor state.
 *.md
 *.out
 *.test

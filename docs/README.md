@@ -44,7 +44,7 @@ for status, deviations, and verification notes.
 | [configuration.md](configuration.md) | Flag > environment > config file > default precedence, the JSON config file, and environment variables |
 | [coding-standard.md](coding-standard.md) | Normative Go practice, dependencies, testing, and §8 review gates |
 | [commands.md](commands.md) | Shipped slash commands, autocomplete, arguments, and `-ui-json` mapping |
-| [container.md](container.md) | Container image, mounts, user mapping, secrets, network modes, and the image CI |
+| [container.md](container.md) | Container image, release binaries, mounts, user mapping, secrets, network modes, and the release CI |
 | [definition-of-done.md](definition-of-done.md) | Normative completion checklist for every change |
 | [limits.md](limits.md) | CLI, input, TUI, and `-ui-json` caps; SDK-owned caps link to aharness |
 | [release.md](release.md) | Branch model, commit wording, pull-request gating, and release tagging |

@@ -34,8 +34,11 @@ export ACODE_PROVIDER_TOKEN=...   # omit for a local no-auth endpoint
 ./bin/acode -fork <session-id>
 ```
 
-Building requires Go 1.27.4 or newer. The module pins a tagged aharness
-release.
+Building requires Go 1.27.4 or newer; the module pins a tagged aharness
+release. A tagged release also publishes tarballs for `linux` and `darwin` on
+`amd64` and `arm64`, with a `SHA256SUMS` file and a build attestation, on the
+[releases page](https://github.com/eddiectc/acode/releases), and the container
+image carries the same binary, so neither of those paths needs a Go toolchain.
 
 In the TUI and `-ui-json`, the task is
 optional: a new session is created eagerly, the header shows its ID, and the
@@ -289,9 +292,11 @@ inside the project, which is already mounted.
 ### Containers
 
 CI publishes a container image at `ghcr.io/eddiectc/acode` for `linux/amd64`
-and `linux/arm64`. It carries the binary, `/bin/sh`, git, and CA certificates,
-but no project toolchain: derive an image from it to add the compilers and test
-runners a workspace needs.
+and `linux/arm64`, built from the same binaries it attaches to a tag's release.
+It carries the binary, `/bin/sh`, git, and CA certificates, but no project
+toolchain: derive an image from it to add the compilers and test runners a
+workspace needs, or copy the binary into the project's own toolchain image when
+CI and the agent must share a base.
 
 ```sh
 podman run --rm -it \
@@ -311,7 +316,8 @@ mode. Use `--env-file` rather than `-e` so a token does not land in the shell
 history or the container's inspected environment.
 
 [container.md](docs/container.md) covers UID mapping, secrets, host versus
-isolated networking, a LiteLLM-style gateway, and the image build arguments.
+isolated networking, a LiteLLM-style gateway, and how the image is built from
+the release binaries.
 
 ## Documentation
 
@@ -323,7 +329,7 @@ isolated networking, a LiteLLM-style gateway, and the image build arguments.
 | [coding-standard.md](docs/coding-standard.md) | Normative Go practice, dependencies, testing, and §8 review gates |
 | [tui.md](docs/tui.md) | TUI modes, keys, `-ui-json` protocol, and caps |
 | [commands.md](docs/commands.md) | Slash-command reference: syntax, autocomplete, arguments, key equivalents, idle/run behavior, `-ui-json` mapping, and caps |
-| [container.md](docs/container.md) | Container image, mounts, UID/GID mapping, secrets, network modes, and the image CI |
+| [container.md](docs/container.md) | Container image, release binaries, mounts, UID/GID mapping, secrets, network modes, and the release CI |
 | [testing-strategy.md](docs/testing-strategy.md) | Config, integration, TUI/headless, fuzz, and manual smoke checks |
 | [definition-of-done.md](docs/definition-of-done.md) | Completion checklist for every change |
 | [release.md](docs/release.md) | Branch model, commit wording, pull-request gating, and release tagging |

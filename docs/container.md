@@ -1,18 +1,22 @@
 # acode in a container
 
 - **Date:** 2026-11-20
-- **Status:** current for the published container image
+- **Status:** current for the published image and release binaries
 - **Related:** [configuration](configuration.md), [architecture](architecture.md),
   [limits](limits.md), [definition of done](definition-of-done.md), and the
   [coding standard](coding-standard.md)
 - **Files:** [`Dockerfile`](../Dockerfile), [`.dockerignore`](../.dockerignore),
   [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), and
-  [`.github/workflows/image.yml`](../.github/workflows/image.yml)
+  [`.github/workflows/release.yml`](../.github/workflows/release.yml)
 
 The image is `ghcr.io/eddiectc/acode`. It carries the `acode` binary, `/bin/sh`,
-git, an SSH client, and CA certificates. It carries **no project toolchain**:
-derive an image from it to add the compilers and test runners a project needs,
-or the agent cannot build or test the workspace it is editing.
+git, an SSH client, and CA certificates. The same binary is published as a
+tarball for `linux` and `darwin` on `amd64` and `arm64` for every `v*` tag
+([§7](#7-continuous-integration)), and the image is built from the binaries
+that workflow produced. The image carries **no project toolchain**: derive an
+image from it to add the compilers and test runners a project needs, or put the
+binary into the project's own toolchain image (§6), or the agent cannot build
+or test the workspace it is editing.
 
 The image is **not** a sandbox, an approval workflow, or a secret store. acode
 does not sandbox itself and has no approval step ([README](../README.md#isolation));
@@ -252,7 +256,22 @@ Otherwise serve them over HTTPS.
 
 ## 6. Building the image
 
+The image does not compile acode. It copies `dist/linux/<arch>/acode`, the
+binary a Go build produced, so the image, the release tarballs, and what
+`acode -version` reports all come from one build:
+
 ```sh
+make dist    # dist/linux/<host-arch>/acode: GOOS=linux, CGO off, -trimpath
+make image   # docker build, VERSION and REVISION taken from git
+```
+
+The image job in [release.yml](../.github/workflows/release.yml) does the same
+thing with the binaries it built for both linux architectures. By hand:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+  -ldflags "-X main.version=vX.Y.Z" -o dist/linux/arm64/acode ./cmd/acode
+
 docker build \
   --build-arg VERSION="$(git describe --tags --always)" \
   --build-arg REVISION="$(git rev-parse HEAD)" \
@@ -261,34 +280,131 @@ docker build \
 
 | Build argument | Default | Purpose |
 |---|---|---|
-| `GO_IMAGE` | `golang:1.27.4-trixie` | Builder stage. |
-| `RUNTIME_IMAGE` | `debian:trixie-slim` | Runtime stage. |
-| `VERSION` | `devel` | Stamped with `-X main.version`; what `acode -version` reports. |
+| `RUNTIME_IMAGE` | `debian:trixie-slim` | The base image. |
+| `TARGETARCH` | set by BuildKit | Selects `dist/linux/<arch>/acode`. The classic builder leaves it empty, so the build needs BuildKit. |
+| `VERSION` | `devel` | `org.opencontainers.image.version` label only. |
 | `REVISION` | `unknown` | `org.opencontainers.image.revision` label only. |
 | `UID`, `GID` | `1000` | The runtime user. |
 
-The build context excludes `.git`, so the image has no VCS metadata to derive a
-version from: `VERSION` is the only source, and the Dockerfile default is
-`devel`. The binary is built with `-trimpath` and is not stripped, per
-[coding standard §8](coding-standard.md#8-tooling-and-review-gates).
+`VERSION` no longer stamps the binary; the build that produced the binary did
+that, and the label mirrors it. The workflow passes one version string to both
+the binary build and the label, so a published image and its tarball report the
+same thing. A local `make dist` passes no `-ldflags`, so a locally built image
+reports the module version and the VCS revision while its label says what
+`git describe` says.
 
-The builder stage runs on the native platform and cross-compiles with
-`GOOS`/`GOARCH`, so `--platform linux/amd64,linux/arm64` needs no emulation.
+`--platform linux/amd64,linux/arm64` needs both trees in the context; `make
+dist` writes only the host architecture, so build the other one explicitly as
+above. Nothing is compiled inside the build, so no Go cross-compile is
+involved, but the `RUN` that installs packages still executes inside the target
+platform's container: a multi-platform build on one machine needs binfmt/QEMU
+registered (`docker/setup-qemu-action`, which the workflow uses).
+
+The build context therefore carries `dist/` and `LICENSE` and excludes the
+source; [`.dockerignore`](../.dockerignore) says so.
 
 ### Adding a toolchain
 
-Derive from the published image rather than rebuilding acode:
+The image carries no project toolchain, so a derived image supplies one. Three
+shapes work; they differ in where acode comes from:
+
+| Base image | acode comes from | Use when |
+|---|---|---|
+| `ghcr.io/eddiectc/acode` | the base image | The toolchain is packaged for Debian, or you are adding one or two tools. |
+| The project's own toolchain image | `COPY --from` the acode image | CI and the agent must share a base, and the toolchain is not a Debian package. |
+| The project's own toolchain image | `go install` a pinned tag | You cannot fetch the image or a release tarball, and you accept building acode from source. |
+
+Deriving is the least work: the user, `HOME`, the state directory, `/bin/sh`,
+git, and the CA certificates are already right, and the added layer is only the
+toolchain.
 
 ```dockerfile
-FROM ghcr.io/eddiectc/acode:latest
+FROM ghcr.io/eddiectc/acode:vX.Y.Z
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends golang-go nodejs npm \
+ && apt-get install -y --no-install-recommends nodejs npm \
  && rm -rf /var/lib/apt/lists/*
 USER 1000:1000
 ```
 
-Pin the tag in a real project. The agent then runs the project's own checks
+Pin the tag in a real project. Do not add Go this way: the distribution's
+`golang-go` trails the version a project pins in `go.mod`, so `go` either
+downloads the required toolchain on first use (`GOTOOLCHAIN=auto`, which needs
+network) or refuses (`GOTOOLCHAIN=local`). A Go project belongs in the second
+shape.
+
+To keep your own base image, take the binary from the release tarball
+(`tar -xzf acode_vX.Y.Z_linux_arm64.tar.gz -C /usr/local/bin acode`) or out of
+the published image. It is built with `CGO_ENABLED=0`, so it runs in any base;
+the price is that the base must supply the rest of the runtime, and you
+reproduce the image's own setup:
+
+```dockerfile
+FROM ghcr.io/eddiectc/acode:vX.Y.Z AS acode
+FROM <your toolchain image>
+
+# Only the file is needed, not the acode image's base. Taking it through a FROM
+# stage keeps the FROM platform rule: a multi-arch build resolves the matching
+# variant of the acode image.
+COPY --from=acode /usr/local/bin/acode /usr/local/bin/acode
+
+# What deriving would have supplied: the image user (§3), its HOME, the 0700
+# state directory (§2), the two cache directories §2 mounts, and a locale. The
+# base may default to a non-root user, hence the explicit USER root. A
+# `golang:*` base keeps GOPATH and its module cache under root-owned /go, and
+# the run_command environment passes HOME and PATH but not GOPATH, so the cache
+# and the installed binaries belong under HOME. Check the base does not already
+# use UID or GID 1000 (§3).
+USER root
+RUN groupadd --gid 1000 acode \
+ && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/acode \
+      --shell /bin/bash acode \
+ && install -d -o 1000 -g 1000 -m 0700 /home/acode/.acode \
+ && install -d -o 1000 -g 1000 -m 0755 /home/acode/.cache \
+ && install -d -o 1000 -g 1000 -m 0755 /home/acode/go/pkg/mod \
+ && install -d -o 1000 -g 1000 -m 0755 /home/acode/.cache/go-build \
+ && install -d -o 1000 -g 1000 -m 0755 /workspace
+ENV HOME=/home/acode \
+    LANG=C.UTF-8 \
+    PATH=/home/acode/go/bin:$PATH
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["acode"]
+```
+
+The base must supply `/bin/sh`; `ca-certificates`, git, and an SSH client are
+what the published runtime adds on top of `debian:trixie-slim`
+([Dockerfile](../Dockerfile)), which already has a shell. Without them
+`run_command`, HTTPS fetches, and the git tools fail.
+
+An Alpine base needs `addgroup`/`adduser` instead of `groupadd`/`useradd`. A
+distroless base has neither, nor `/bin/sh`, so `run_command` cannot execute
+anything at all: the SDK invokes `/bin/sh -c`.
+
+`go install` is the last option. Build it in a stage so the module and build
+caches stay out of the final image, and pin the tag:
+
+```dockerfile
+FROM golang:1.27.4-trixie AS built
+RUN GOBIN=/out go install github.com/eddiectc/acode/cmd/acode@vX.Y.Z
+```
+
+Drop the published-image stage and its `Only the file is needed` comment from
+the runtime example, and copy from that stage instead:
+`COPY --from=built /out/acode /usr/local/bin/acode`. Everything else in that
+stage stays: the `USER root` and the whole `RUN` (including the two cache
+directories), `ENV` with `LANG`, `USER`, `WORKDIR`, and `ENTRYPOINT`.
+
+It is the weakest of the three: `@latest` makes the image unreproducible; the
+build needs module-proxy access and a toolchain that satisfies the module's `go`
+directive; the version comes from the module tag, so `acode -version` reports
+`vX.Y.Z` with `vcs revision: unknown`; and the result carries no provenance
+attestation. A release tarball is the same binary the image carries, with a
+`SHA256SUMS` file and a build attestation ([release](release.md)), and the
+image is the artifact CI built, so take one of those rather than rebuild acode.
+Use `go install` when neither can be fetched.
+
+Whichever shape you choose, the agent then runs the project's own checks
 (`go test ./...`, `npm test`) against the mounted workspace through
 `run_command`, which is the only verification worth trusting.
 
@@ -297,18 +413,43 @@ Pin the tag in a real project. The agent then runs the project's own checks
 | Workflow | Trigger | Result |
 |---|---|---|
 | [ci.yml](../.github/workflows/ci.yml) | push to `main`, pull request, manual | Runs `make dod`, the coding standard's §8 gates plus `docs-check`. |
-| [image.yml](../.github/workflows/image.yml) | push to `main` or a `v*` tag, pull request, manual | Publishes `ghcr.io/eddiectc/acode`. |
+| [release.yml](../.github/workflows/release.yml) | push to `main` or a `v*` tag, pull request, manual | Builds the binaries, attaches them to a tag's GitHub Release, and publishes `ghcr.io/eddiectc/acode` from those binaries. |
+
+The workflow has four jobs:
+
+| Job | Does |
+|---|---|
+| `version` | Resolves one version string: the tag name, or `devel-<short sha>` on a branch. |
+| `binaries` | Builds it for `linux` and `darwin` on `amd64` and `arm64` with `-trimpath` and `-X main.version`, and uploads each binary as an artifact. |
+| `image` | Downloads the two linux artifacts, puts them at `dist/linux/<arch>/acode`, and builds the image from them. |
+| `release` | Tags only: packages the tarballs, attests them, and uploads them to the GitHub Release. |
+
+Release assets for a `vX.Y.Z` tag:
+
+| Asset | Contents |
+|---|---|
+| `acode_<version>_<os>_<arch>.tar.gz` | The `acode` binary and `LICENSE`, binary mode 0755, owned 0/0. |
+| `SHA256SUMS` | One SHA-256 per tarball. |
+| Attestation | Build provenance for each tarball; check it with `gh attestation verify`. |
 
 Published tags:
 
-| Event | Tags |
-|---|---|
-| Push to `main` | `latest`, `sha-<short>` |
-| Tag `vX.Y.Z` | `vX.Y.Z`, `vX.Y`, `vX`, `sha-<short>` |
-| Pull request | none; `linux/amd64` build only, to prove the tree compiles |
+| Event | Image tags | Release assets |
+|---|---|---|
+| Push to `main` | `latest`, `sha-<short>` | none |
+| Tag `vX.Y.Z` | `vX.Y.Z`, `vX.Y`, `vX`, `sha-<short>` | tarballs, `SHA256SUMS`, attestation |
+| Pull request | none; all four binaries build and the image is built for `linux/amd64` only, to prove the tree compiles | none |
+
+A manual dispatch builds and publishes nothing, from any ref: only a push
+publishes, and the push triggers are `main` and a `v*` tag. That keeps an
+untested branch from reaching the registry through a manual run.
+
+Windows is not built. `/bin/sh`, the manual PTY smoke, and `syscall.SIGTERM`
+are Unix, CI is Linux-only, and nothing exercises the CLI on Windows, so a zip
+would be a claim nothing checks. A Windows user builds from source.
 
 `latest` tracks `main` HEAD, so a tagged release image can be older than
-`latest`. The image job gates on the tree compiling, not on the test suite:
+`latest`. The workflow gates on the tree compiling, not on the test suite:
 `ci.yml` is the test gate, and a release is tagged after CI is green. The full
 branch and tagging contract is in [release.md](release.md).
 
@@ -320,12 +461,29 @@ protection a commit could reach `latest` with no completed test run.
 
 Checked for this document: the base image tags resolve; UID and GID 1000 are
 free in `debian:trixie-slim`, and `useradd`, `groupadd`, `install`, `apt-get`,
-and `/bin/sh` exist there; the build context is sufficient to compile the
-binary with the documented flags; a `-ldflags "-X main.version=..."` build
-reports that version; the Dockerfile is clean under `hadolint`, and both
-workflows parse under `actionlint`.
+and `/bin/sh` exist there; `CGO_ENABLED=0` yields a statically linked binary
+(checked with `file` and `ldd`); a `-ldflags "-X main.version=..."` build
+reports that version; the Dockerfile is clean under `hadolint` 2.12.0, and both
+workflows parse under `actionlint`, which ran its shellcheck pass over every
+`run:` block. For §6, `make dist` wrote `dist/linux/<arch>/acode`, and the
+packaging loop from §7 was run on that tree: it produced
+`acode_v0.0.1-test_linux_amd64.tar.gz` containing the binary at mode 0755 and
+`LICENSE`, and wrote a `SHA256SUMS` whose digest matched. A `go install` of
+`github.com/eddiectc/acode/cmd/acode@v0.0.1` with `GOBIN` set resolved through
+the module proxy and reported `acode v0.0.1` with `vcs revision: unknown`, which
+is the tag-not-stamp behaviour §6 describes.
 
 Not checked, and required before the first published image is trusted: an
 actual `docker build` and `podman build` on a machine with a working container
-runtime, a TUI session against a real terminal, and a real-provider run through
-a gateway.
+runtime, a TUI session against a real terminal, a real-provider run through a
+gateway, and one end-to-end run of [release.yml](../.github/workflows/release.yml)
+on GitHub. This environment has no working container runtime (the `docker` CLI
+is a Podman shim, and Podman exits with `Error determining cgroups mode`), so
+the §6 image examples were not built and their `useradd`/`install` lines and
+multi-arch behaviour are unverified. The workflow's GitHub-side behaviour is
+also unverified: that an uploaded artifact keeps the `dist/<goos>/<goarch>/`
+path the packaging loop and the Dockerfile expect, that `merge-multiple` yields
+`dist/linux/<arch>/acode` for both linux artifacts, that BuildKit resolves
+`TARGETARCH` inside `COPY`, and that `actions/attest-build-provenance` and
+`gh release` succeed under the job's permissions. The `go install` command
+itself was run on the host; only its stage and `COPY` are untested.

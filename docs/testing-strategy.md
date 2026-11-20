@@ -1,6 +1,6 @@
 # acode testing strategy
 
-- **Date:** 2026-11-18
+- **Date:** 2026-11-20
 - **Status:** normative for the acode coding-agent application
 - **Related:** [architecture](architecture.md),
   [coding standard](coding-standard.md), [limits](limits.md),
@@ -119,12 +119,13 @@ pending checks.
   frames, SVG, style truncation, and error codes.
 - Images: Kitty and glyph fallbacks, oversized files, and a resumed transcript.
 - Sandbox: `scripts/acode-bwrap` with the documented binds and `--shell`.
-- Container: build the image, then run the documented Podman and Docker
-  invocations in [container.md](container.md). Check that the TUI starts with
-  `-it`, that a state volume survives `--rm`, that the UID/GID mapping can
-  write the workspace and the state directory, that `run_command` works
-  (`/bin/sh` and git are present), and that `acode -version` reports the
-  stamped version rather than `devel`.
+- Container: run `make dist` and then `make image`, then run the documented
+  Podman and Docker invocations in [container.md](container.md). Check that the
+  TUI starts with `-it`, that a state volume survives `--rm`, that the UID/GID
+  mapping can write the workspace and the state directory, that `run_command`
+  works (`/bin/sh` and git are present), and that `acode -version` reports a
+  version and a VCS revision: the tag on a published image, the module version
+  and the local revision on a `make dist` build.
 
 A smoke that was not run is pending, not verified. Do not describe it
 otherwise.
