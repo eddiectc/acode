@@ -1,0 +1,80 @@
+# Per-machine overrides for the acode compose stack, and the file the agent's
+# own credentials and commit identity belong in. It is not in git; this example
+# is.
+#
+#   cp compose.local.yaml.example compose.local.yaml
+#
+# The launcher scripts pass it last when it exists, so it wins over
+# compose.yaml and compose.podman.yaml; docs/container.md section 5.
+#
+# Keep to keys Docker Compose and podman-compose both honour. The mounts below
+# are plain read-only binds rather than Compose `secrets:` entries, because the
+# two engines differ in how they implement `secrets:` and a bind does not.
+
+services:
+  acode:
+    volumes:
+      # A GitHub PAT for a bot account, so a tool call can push a branch or work
+      # on issues. Create the file on the host, before the first run: an engine
+      # creates a missing bind source as a root-owned directory, and the token
+      # then reads as a directory in a confusing failure.
+      #
+      #   install -d -m 0700 ~/.config/acode
+      #   read -rs TOKEN && printf '%s' "$TOKEN" > ~/.config/acode/github-token
+      #
+      # 0600 and outside any checkout, so neither git nor the image carry it.
+      # `Z` relabels for SELinux and is ignored where SELinux is off.
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/github-token
+        target: /run/secrets/github_token
+        read_only: true
+        bind:
+          selinux: Z
+      # Commit identity. GIT_AUTHOR_NAME and friends in .env would not arrive:
+      # run_command children get an environment allowlist (PATH, LANG, LC_ALL,
+      # TERM, HOME, TMPDIR), and a tool call is what runs `git`. HOME does arrive
+      # and `~/.gitconfig` is where git looks, so the identity is a file.
+      #
+      # A separate file, not your own ~/.gitconfig: that one would attribute what
+      # the agent commits to you. Mounted read-only, so the agent cannot rewrite
+      # the identity it commits under. The email has to belong to the bot account
+      # or GitHub shows the commit unattributed; the `ID+login@users.noreply...`
+      # form always does, and hides a real address.
+      #
+      #   printf '[user]\n\tname = acode-bot\n\temail = 12345+acode-bot@users.noreply.github.com\n' \
+      #     > ~/.config/acode/gitconfig
+      #
+      # Read-only, so `git config --global` fails inside; that is intended.
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/gitconfig
+        target: /home/acode/.gitconfig
+        read_only: true
+        bind:
+          selinux: Z
+      # SSH host keys. This is the path ssh reads by default, so with the file
+      # in place `git push` works on every run with no -o flags: ssh finds
+      # github.com already trusted and never has to ask.
+      #
+      # Read-only, which is the point: ssh writes to known_hosts only while
+      # learning a host it has not seen, and pre-populating removes that. A
+      # writable one would let the agent re-pin github.com to a key of its
+      # choosing, which is the exact attack the file exists to stop.
+      #
+      # Take the keys from GitHub's published list over HTTPS, not from
+      # ssh-keyscan, which trusts whatever answers first:
+      #
+      #   curl -sS https://api.github.com/meta \
+      #     | python3 -c 'import json,sys;[print("github.com",k) for k in json.load(sys.stdin)["ssh_keys"]]' \
+      #     > ~/.config/acode/known_hosts
+      #
+      # The source is a file, so it needs `~/.ssh` to exist in the container;
+      # when `~/.ssh` is itself bound read-only this file bind nests over it.
+      # Add a line per host for anywhere else you push: a key that is not here
+      # makes ssh fail loudly rather than trust it, which is the behaviour you
+      # want from a container that holds a push credential.
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/known_hosts
+        target: /home/acode/.ssh/known_hosts
+        read_only: true
+        bind:
+          selinux: Z

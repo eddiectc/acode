@@ -11,6 +11,9 @@
 # ACODE_WORKSPACE pins a project other than $PWD. ACODE_BUILD=1 forces a build;
 # otherwise a missing stack image is built. ACODE_STACK_IMAGE overrides the image
 # name used for that check and must match services.acode.image in compose.yaml.
+# A compose.local.yaml in the stack checkout is passed last, so a machine-local
+# override -- a credential bind, another ACODE_IMAGE -- wins and stays out of
+# git; docs/container.md section 5.
 set -eu
 
 STACK_DIR="${ACODE_STACK_DIR:-$(cd -- "$(dirname -- "$0")/.." && pwd -P)}"
@@ -43,6 +46,14 @@ esac
 export ACODE_WORKSPACE="$WORKSPACE"
 export ACODE_STACK_DIR="$STACK_DIR"
 
+# A per-machine override that is not in git: a credential bind, another
+# ACODE_IMAGE, extra volumes. Compose merges later files over earlier ones, so
+# it goes last and wins; docs/container.md section 5.
+FILES=(-f "$STACK_DIR/compose.yaml")
+if [ -f "$STACK_DIR/compose.local.yaml" ]; then
+  FILES+=(-f "$STACK_DIR/compose.local.yaml")
+fi
+
 # 32 random bits keep concurrent instances apart, and the name is what a later
 # `docker logs`, `docker stop`, or `docker exec` needs to address one of them.
 NAME="acode-$(od -An -N4 -tx4 /dev/urandom | tr -d ' \n')"
@@ -56,4 +67,4 @@ if [ "${ACODE_BUILD:-0}" = "1" ] || ! docker image inspect "$IMAGE" >/dev/null 2
 fi
 
 echo "acode-docker: $NAME on $WORKSPACE" >&2
-exec docker compose -f "$STACK_DIR/compose.yaml" "${RUN[@]}" acode "$@"
+exec docker compose "${FILES[@]}" "${RUN[@]}" acode "$@"

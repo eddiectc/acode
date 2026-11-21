@@ -24,6 +24,7 @@ release
 # Local secrets for the compose stack; never sent to a builder.
 .env
 *.env
+compose.local.yaml
 
 # Root-level prose and local editor state.
 *.md
