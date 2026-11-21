@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Run acode in the compose stack with Docker Compose, editing the current
+# directory. Each invocation gets its own one-off container under a random name,
+# so several instances can run at once; docs/container.md section 8.
+#
+#   cd ~/src/project
+#   ~/acode/scripts/acode-docker                        # TUI on ~/src/project
+#   ~/acode/scripts/acode-docker -model <id> -task "..."  # arguments go to acode
+#   ACODE_TTY=0 ~/acode/scripts/acode-docker < task.txt   # no TTY, for piped input
+#
+# ACODE_WORKSPACE pins a project other than $PWD. ACODE_BUILD=1 forces a build;
+# otherwise a missing stack image is built. ACODE_STACK_IMAGE overrides the image
+# name used for that check and must match services.acode.image in compose.yaml.
+set -eu
+
+STACK_DIR="${ACODE_STACK_DIR:-$(cd -- "$(dirname -- "$0")/.." && pwd -P)}"
+WORKSPACE="${ACODE_WORKSPACE:-$PWD}"
+IMAGE="${ACODE_STACK_IMAGE:-localhost/acode-stack:local}"
+
+[ -f "$STACK_DIR/compose.yaml" ] || {
+  echo "acode-docker: no compose.yaml in $STACK_DIR; set ACODE_STACK_DIR" >&2
+  exit 1
+}
+command -v docker >/dev/null 2>&1 || {
+  echo "acode-docker: docker not found in PATH" >&2
+  exit 1
+}
+
+# Absolute, because the mount repeats the host path inside the container and a
+# relative source is not usable there. Existing, because a typo would otherwise
+# let the engine create an empty root-owned directory for the bind.
+case "$WORKSPACE" in
+  /*) ;;
+  *) echo "acode-docker: workspace must be an absolute path: $WORKSPACE" >&2; exit 2 ;;
+esac
+[ -d "$WORKSPACE" ] || {
+  echo "acode-docker: workspace is not a directory: $WORKSPACE" >&2
+  exit 2
+}
+
+# Compose interpolates the bind and working_dir before the container exists, so
+# `run -e` cannot carry these; they have to be in this process environment.
+export ACODE_WORKSPACE="$WORKSPACE"
+export ACODE_STACK_DIR="$STACK_DIR"
+
+# 32 random bits keep concurrent instances apart, and the name is what a later
+# `docker logs`, `docker stop`, or `docker exec` needs to address one of them.
+NAME="acode-$(od -An -N4 -tx4 /dev/urandom | tr -d ' \n')"
+
+RUN=(run --rm --name "$NAME")
+if [ "${ACODE_TTY:-1}" = "0" ]; then
+  RUN+=(-T)
+fi
+if [ "${ACODE_BUILD:-0}" = "1" ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  RUN+=(--build)
+fi
+
+echo "acode-docker: $NAME on $WORKSPACE" >&2
+exec docker compose -f "$STACK_DIR/compose.yaml" "${RUN[@]}" acode "$@"

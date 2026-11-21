@@ -21,6 +21,10 @@ go.sum
 release
 *.tar.gz
 
+# Local secrets for the compose stack; never sent to a builder.
+.env
+*.env
+
 # Root-level prose and local editor state.
 *.md
 *.out

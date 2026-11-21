@@ -317,7 +317,18 @@ history or the container's inspected environment.
 
 [container.md](docs/container.md) covers UID mapping, secrets, host versus
 isolated networking, a LiteLLM-style gateway, and how the image is built from
-the release binaries.
+the release binaries. A full local stack — acode, LiteLLM, SearXNG, and
+Crawl4AI — is in [compose.yaml](compose.yaml) and documented in
+[container.md §1](docs/container.md#1-quick-start-the-compose-stack).
+[`scripts/acode-docker`](scripts/acode-docker) and
+[`scripts/acode-podman`](scripts/acode-podman) launch that stack from any
+project directory, each run under its own randomly named container:
+
+```sh
+cd /path/to/repo
+~/acode/scripts/acode-docker                        # or scripts/acode-podman
+~/acode/scripts/acode-docker -model <model-id> -task "Fix the failing test"
+```
 
 ## Documentation
 
@@ -329,7 +340,7 @@ the release binaries.
 | [coding-standard.md](docs/coding-standard.md) | Normative Go practice, dependencies, testing, and §8 review gates |
 | [tui.md](docs/tui.md) | TUI modes, keys, `-ui-json` protocol, and caps |
 | [commands.md](docs/commands.md) | Slash-command reference: syntax, autocomplete, arguments, key equivalents, idle/run behavior, `-ui-json` mapping, and caps |
-| [container.md](docs/container.md) | Container image, release binaries, mounts, UID/GID mapping, secrets, network modes, and the release CI |
+| [container.md](docs/container.md) | Container image, release binaries, mounts, UID/GID mapping, secrets, network modes, the compose stack, and the release CI |
 | [testing-strategy.md](docs/testing-strategy.md) | Config, integration, TUI/headless, fuzz, and manual smoke checks |
 | [definition-of-done.md](docs/definition-of-done.md) | Completion checklist for every change |
 | [release.md](docs/release.md) | Branch model, commit wording, pull-request gating, and release tagging |
