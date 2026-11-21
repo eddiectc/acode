@@ -51,30 +51,29 @@ services:
         read_only: true
         bind:
           selinux: Z
-      # SSH host keys. This is the path ssh reads by default, so with the file
-      # in place `git push` works on every run with no -o flags: ssh finds
-      # github.com already trusted and never has to ask.
+      # SSH: the key for pushing, and known_hosts so ssh does not have to learn
+      # github.com. One directory bind, not a bind per file, because known_hosts
+      # has to sit beside the key at the path ssh reads by default
+      # (/home/acode/.ssh/known_hosts, confirmed with `ssh -G github.com`), and
+      # a single bind keeps the two together.
       #
-      # Read-only, which is the point: ssh writes to known_hosts only while
-      # learning a host it has not seen, and pre-populating removes that. A
-      # writable one would let the agent re-pin github.com to a key of its
-      # choosing, which is the exact attack the file exists to stop.
-      #
-      # Take the keys from GitHub's published list over HTTPS, not from
-      # ssh-keyscan, which trusts whatever answers first:
-      #
+      #   install -d -m 0700 ~/.config/acode/.ssh
+      #   cp ~/.ssh/id_ed25519 ~/.config/acode/.ssh/   # a copy, not your only key
       #   curl -sS https://api.github.com/meta \
       #     | python3 -c 'import json,sys;[print("github.com",k) for k in json.load(sys.stdin)["ssh_keys"]]' \
-      #     > ~/.config/acode/known_hosts
+      #     > ~/.config/acode/.ssh/known_hosts
       #
-      # The source is a file, so it needs `~/.ssh` to exist in the container;
-      # when `~/.ssh` is itself bound read-only this file bind nests over it.
-      # Add a line per host for anywhere else you push: a key that is not here
-      # makes ssh fail loudly rather than trust it, which is the behaviour you
-      # want from a container that holds a push credential.
+      # Take the host keys from GitHub's published list over HTTPS, not from
+      # ssh-keyscan, which trusts whichever host answers first and records it.
+      #
+      # Read-only is the point. ssh writes to known_hosts only while learning an
+      # unseen host, and pre-populating removes that write, so a writable mount
+      # buys nothing and would let an injected instruction re-pin github.com to
+      # a key of its choosing -- the exact attack the file exists to prevent.
+      # One line per host you push to; an unknown host then fails loudly.
       - type: bind
-        source: ${HOME:?HOME is not set}/.config/acode/known_hosts
-        target: /home/acode/.ssh/known_hosts
+        source: ${HOME:?HOME is not set}/.config/acode/.ssh
+        target: /home/acode/.ssh
         read_only: true
         bind:
           selinux: Z
