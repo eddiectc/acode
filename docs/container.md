@@ -471,6 +471,36 @@ out of the log. In the container `/home/acode` is not a volume, so a
 the read-only mount also makes it fail outright, which is the behaviour you
 want.
 
+An **SSH host key** is the third file, and it is the reason a `git push` over
+an `ssh` remote needs no flags. `.ssh` is often bound read-only, in which case
+ssh cannot create `~/.ssh/known_hosts` and every run fails with "Host key
+verification failed" — `-o UserKnownHostsFile=…` works around it once and has to
+be repeated, which is not a fix. Mount the file at its default path instead:
+
+```sh
+curl -sS https://api.github.com/meta \
+  | python3 -c 'import json,sys;[print("github.com",k) for k in json.load(sys.stdin)["ssh_keys"]]' \
+  > ~/.config/acode/known_hosts
+```
+
+Bound **read-only** at `/home/acode/.ssh/known_hosts`, that file is enough:
+ssh finds `github.com` already trusted, verifies the key it is offered against
+it, and never needs to write. Read-only is the safer half of the choice, because
+ssh writes to `known_hosts` only while learning a host it has not seen, and this
+removes that: a writable file would let an injected instruction re-pin
+`github.com` to a key of its choosing, defeating the check. The keys come from
+GitHub's published list over HTTPS rather than `ssh-keyscan`, which trusts
+whichever host answers first and then records it. One line per host you push to;
+an unknown host fails loudly, which is correct for a container holding a push
+credential.
+
+When `~/.ssh` is itself a read-only bind, this file bind nests over it and the
+parent directory already exists. Otherwise the directory has to exist in the
+image before the file can be mounted into it. If you also want ssh to *learn*
+hosts, that needs `StrictHostKeyChecking=accept-new`, and it belongs in
+`core.sshCommand` in the mounted `.gitconfig` — not on each invocation, which is
+the thing being avoided.
+
 A **GitHub token for the agent** belongs in a file, not in that environment:
 `git` and `curl` start as `run_command` children, so an `_TOKEN` name is
 stripped before either sees it, and the tool call is the thing that has to
@@ -503,6 +533,10 @@ curl -sS -H "Authorization: Bearer $(cat /run/secrets/github_token)" \
 # argv and .git/config.
 git -c credential.helper='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/github_token)"; }; f' \
   push https://github.com/eddiectc/acode.git HEAD:refs/heads/<branch>
+
+# Or push the ssh remote the checkout already has, once §5's known_hosts file
+# is mounted: no key flag, no host-key flag.
+git push github HEAD:refs/heads/<branch>
 ```
 
 Bound the token at GitHub, because the mount cannot bound it: a **fine-grained
@@ -716,13 +750,20 @@ launchers, and the stale-pod message names it. The allowlist that keeps
 `GIT_AUTHOR_NAME` out of a tool call was read from `tools/command.go` in
 aharness v0.4.1, and `HOME` is in that allowlist only because the image sets
 `ENV HOME=/home/acode`, so the bind has a directory to land in; `git` with a
-`user` section in a `HOME/.gitconfig` and nothing
-else set committed as that identity and wrote no `user.*` into `.git/config`,
-while the same tree with no gitconfig failed with "Committer identity unknown".
-The token bind itself was not
-mounted: this checkout had no container engine, so the first run on a host is
-what confirms the merge, the mount path, and the UID readability §4 describes —
-`podman-compose … config` shows the resolved mount source before that run.
+`user` section in a `HOME/.gitconfig` and nothing else set committed as that
+identity and wrote no `user.*` into `.git/config`, while the same tree with no
+gitconfig failed with "Committer identity unknown". The token bind itself was
+not mounted: this checkout had no container engine, so the first run on a host
+is what confirms the merge, the mount path, and the UID readability §4
+describes — `podman-compose … config` shows the resolved mount source before
+that run. For §5's `known_hosts`, the file built from `api.github.com/meta`
+carries all three of GitHub's published host keys, and `ssh` against it
+authenticated with no `UserKnownHostsFile` or `StrictHostKeyChecking` flag at
+the default checking level; an empty file and a file holding only a wrong key
+both failed with "Host key verification failed", so the check is real rather
+than TOFU. `HOME` is not what ssh resolves `~` from — it uses the passwd entry
+— which is why the bind has to land on the default path rather than a path
+passed by flag.
 
 The §1 gateway claims were read from the LiteLLM source at `main` and
 `v1.92.0`, not from its documentation, which still labels pass-through `auth`

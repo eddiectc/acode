@@ -51,3 +51,30 @@ services:
         read_only: true
         bind:
           selinux: Z
+      # SSH host keys. This is the path ssh reads by default, so with the file
+      # in place `git push` works on every run with no -o flags: ssh finds
+      # github.com already trusted and never has to ask.
+      #
+      # Read-only, which is the point: ssh writes to known_hosts only while
+      # learning a host it has not seen, and pre-populating removes that. A
+      # writable one would let the agent re-pin github.com to a key of its
+      # choosing, which is the exact attack the file exists to stop.
+      #
+      # Take the keys from GitHub's published list over HTTPS, not from
+      # ssh-keyscan, which trusts whatever answers first:
+      #
+      #   curl -sS https://api.github.com/meta \
+      #     | python3 -c 'import json,sys;[print("github.com",k) for k in json.load(sys.stdin)["ssh_keys"]]' \
+      #     > ~/.config/acode/known_hosts
+      #
+      # The source is a file, so it needs `~/.ssh` to exist in the container;
+      # when `~/.ssh` is itself bound read-only this file bind nests over it.
+      # Add a line per host for anywhere else you push: a key that is not here
+      # makes ssh fail loudly rather than trust it, which is the behaviour you
+      # want from a container that holds a push credential.
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/known_hosts
+        target: /home/acode/.ssh/known_hosts
+        read_only: true
+        bind:
+          selinux: Z
