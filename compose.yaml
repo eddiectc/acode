@@ -1,0 +1,199 @@
+# acode's local full stack: the agent, a LiteLLM gateway, SearXNG for
+# web_search, and Crawl4AI for web_fetch. See docs/container.md section 8.
+#
+# Run it from the directory to edit: from this checkout it edits this checkout,
+# from a project directory with -f it edits that project. See docs/container.md
+# section 8.
+#
+#   docker compose up -d searxng litellm crawl4ai
+#   docker compose run --rm --build acode
+#
+#   podman-compose -f compose.yaml -f compose.podman.yaml \
+#     up -d searxng litellm crawl4ai
+#   podman-compose -f compose.yaml -f compose.podman.yaml run --rm --build acode
+#
+# The acode service mounts the workspace at the same absolute path inside the
+# container, which is what resume and the recorded workspace rely on
+# (docs/container.md section 2). The workspace is the directory Compose runs
+# from ($PWD) unless ACODE_WORKSPACE overrides it; values and secrets come from
+# .env, which Compose loads automatically (see .env.example).
+
+name: acode-stack
+
+services:
+  acode:
+    build:
+      context: .
+      dockerfile: compose/Dockerfile
+      args:
+        # A release tag, digest, or a locally built image. The toolchain base
+        # comes from this file, not from ACODE_IMAGE.
+        ACODE_IMAGE: ${ACODE_IMAGE:-ghcr.io/eddiectc/acode:latest}
+        UID: ${ACODE_UID:-1000}
+        GID: ${ACODE_GID:-1000}
+    image: localhost/acode-stack:local
+    # `run` creates a one-off container, so several instances can share one
+    # definition, each editing the directory it runs from;
+    # docs/container.md section 8 lists what they share and when to run a
+    # second stack instead.
+    init: true
+    stdin_open: true
+    tty: true
+    # The workspace is $PWD: run Compose from the project to edit. The `:?`
+    # makes a missing PWD an error instead of an empty mount path. `-e` does not
+    # reach this interpolation; only the shell or .env does.
+    working_dir: ${ACODE_WORKSPACE:-${PWD:?run from the directory to edit, or set ACODE_WORKSPACE}}
+    # Host networking, so 127.0.0.1 is the host's loopback where searxng,
+    # litellm, and crawl4ai publish. The alternative, joining searxng's
+    # namespace (`network_mode: "service:searxng"`), cannot work with keep-id:
+    # setns() into a network namespace needs CAP_SYS_ADMIN in the user
+    # namespace that owns it, and keep-id puts acode in a sibling namespace.
+    # Rootless Podman then fails at container create with no useful message.
+    # The cost is that a `run_command` server the agent starts binds host
+    # ports directly; docs/container.md section 1.
+    network_mode: host
+    depends_on:
+      - searxng
+      - litellm
+      - crawl4ai
+    environment:
+      # A models.dev catalog ID that the upstream also accepts by name. acode
+      # resolves the dialect, context window, and limits from the catalog
+      # entry; the pass-through forwards the ID as the request's model.
+      ACODE_MODEL: ${ACODE_MODEL:-deepseek-v4.1-flash}
+      # Every URL is loopback on the host, so each published port below is the
+      # port acode dials; all three services bind 127.0.0.1 only. This is what
+      # lets ACODE_SEARXNG_URL satisfy the loopback-HTTP rule (configuration
+      # section 2.1) without sharing a network namespace.
+      ACODE_PROVIDER_BASE_URL: http://127.0.0.1:${LITELLM_PORT:-4000}/go-native/v1
+      ACODE_PROVIDER_TOKEN: ${LITELLM_MASTER_KEY:-sk-acode-local}
+      ACODE_SEARXNG_URL: http://127.0.0.1:${SEARXNG_PORT:-8889}
+      ACODE_WEB_FETCH_PROVIDER: crawl4ai
+      ACODE_WEB_FETCH_URL: http://127.0.0.1:${CRAWL4AI_PORT:-11235}
+      ACODE_WEB_FETCH_KEY: ${CRAWL4AI_API_TOKEN:-acode-local-crawl4ai}
+      TERM: ${TERM:-xterm-256color}
+    volumes:
+      # The host path on both sides, so a session records the path the host
+      # sees. `Z` relabels for SELinux and is ignored where SELinux is off.
+      - type: bind
+        source: ${ACODE_WORKSPACE:-${PWD:?run from the directory to edit, or set ACODE_WORKSPACE}}
+        target: ${ACODE_WORKSPACE:-${PWD:?run from the directory to edit, or set ACODE_WORKSPACE}}
+        bind:
+          selinux: Z
+      - acode-state:/home/acode/.acode
+      - go-mod-cache:/home/acode/go/pkg/mod
+      - go-build-cache:/home/acode/.cache/go-build
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    # LITELLM_PORT is passed on the command line rather than relied on through
+    # LiteLLM's own PORT env var, so one value visibly drives the listener. The
+    # image's Cmd is replaced here, hence the explicit --host. Note that
+    # LiteLLM picks a random port if it is asked for 4000 and finds it busy
+    # (ProxyInitializationHelpers.serving_port), so keep this one to yourself.
+    command: ["--config", "/etc/litellm/config.yaml", "--host", "0.0.0.0", "--port", "${LITELLM_PORT:-4000}"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-acode-local}
+      # Read by compose/litellm/config.yaml through os.environ/... in the
+      # pass-through Authorization header. Only this service sees the real
+      # provider key; acode holds the gateway key.
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4000}:${LITELLM_PORT:-4000}"
+    volumes:
+      - type: bind
+        # Relative to this file under Docker Compose and to the working
+        # directory under podman-compose; ACODE_STACK_DIR makes the latter
+        # independent of where it runs.
+        source: ${ACODE_STACK_DIR:-.}/compose/litellm
+        target: /etc/litellm
+        read_only: true
+        bind:
+          selinux: Z
+    networks:
+      - stack
+    healthcheck:
+      # A python image, so no curl or wget is assumed.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${LITELLM_PORT:-4000}/health/liveliness', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      # SEARXNG_PORT drives the listener itself: the image's entrypoint copies
+      # it into GRANIAN_PORT. One value therefore moves the container port, the
+      # host publish, the healthcheck, and acode's searxng_url together.
+      # 8080 is avoided because it is the usual dev-server port and acode
+      # shares this container's network namespace, so a run_command server
+      # bound to 8080 would otherwise collide with the search backend.
+      SEARXNG_PORT: ${SEARXNG_PORT:-8889}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:${SEARXNG_PORT:-8889}/}
+      # server.secret_key; the settings file deliberately carries no secret.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-acode-local-searxng}
+      # One operator, no valkey, and no public exposure.
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+      # The entrypoint chowns its config mount to searxng:searxng when it runs
+      # as root; the mount is read-only here, so it logs an ownership warning
+      # instead. The warning is expected; keep the mount read-only so the
+      # service cannot rewrite its own settings.
+      FORCE_OWNERSHIP: "false"
+    ports:
+      # Loopback only: this is the operator's browser, not a public instance.
+      - "127.0.0.1:${SEARXNG_PORT:-8889}:${SEARXNG_PORT:-8889}"
+    volumes:
+      # settings.yml enables the json format web_search asks for.
+      - type: bind
+        source: ${ACODE_STACK_DIR:-.}/compose/searxng
+        target: /etc/searxng
+        read_only: true
+        bind:
+          selinux: Z
+      - searxng-cache:/var/cache/searxng
+    networks:
+      - stack
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${SEARXNG_PORT:-8889}/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  crawl4ai:
+    image: docker.io/unclecode/crawl4ai:latest
+    restart: unless-stopped
+    # Chromium needs shared memory; the default 64 MiB crashes renderers.
+    shm_size: "1gb"
+    environment:
+      # acode sends this as its bearer token (ACODE_WEB_FETCH_KEY). It is also
+      # what makes the published port work: with no token the image's
+      # entrypoint binds the container's own loopback and published ports are
+      # refused, so do not blank it.
+      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-acode-local-crawl4ai}
+      # The image's entrypoint reads CRAWL4AI_PORT into GUNICORN_BIND, so this
+      # moves the listener along with the publish and the healthcheck below.
+      CRAWL4AI_PORT: ${CRAWL4AI_PORT:-11235}
+    ports:
+      - "127.0.0.1:${CRAWL4AI_PORT:-11235}:${CRAWL4AI_PORT:-11235}"
+    networks:
+      - stack
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${CRAWL4AI_PORT:-11235}/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+networks:
+  stack:
+
+volumes:
+  acode-state:
+  go-mod-cache:
+  go-build-cache:
+  searxng-cache:

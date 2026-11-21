@@ -1,0 +1,134 @@
+# SearXNG for the acode compose stack: research-weighted, JSON enabled.
+#
+# acode's web_search GETs {base}/search?format=json and needs the json format
+# (the image's stock configuration serves html only). Everything not listed
+# here comes from the image's defaults, and `use_default_settings: true` merges
+# this file on top of them, so an `engines` entry under a name the defaults
+# already use *updates* that engine instead of adding a second one.
+#
+# Deliberately absent: `server.secret_key`. Its schema entry has no default, so
+# SearXNG rejects the settings unless SEARXNG_SECRET is set; compose.yaml always
+# sets it, and composing this file elsewhere means doing the same. No other
+# secret belongs in this file.
+#
+# Shapes that look plausible but fail: a `*.example.com` hostname glob (the
+# plugin compiles Python regexes, and `re.error` in its unguarded init aborts
+# startup), the hostnames block nested inside the plugin entry (PluginCfg takes
+# only `active`, so any other key is a TypeError at startup; the block belongs
+# at top level), a plugin list of display names (it is a mapping keyed by import
+# path), `request_timeout` under `search` (it is `outgoing`), engine categories
+# in capitals (`it`, not `IT`), and `semanticscholar`/`core` as engine names
+# (they are `semantic_scholar`, and `core.ac.uk` as the entry name).
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+  safe_search: 0
+
+outgoing:
+  # Per-engine upstream timeout. acode gives one web_search call a fixed 15s
+  # (aharness tools.SearchTimeout), so keep this below that with headroom.
+  request_timeout: 10.0
+
+plugins:
+  # A plugin entry carries exactly one field, `active`: PluginCfg has no other
+  # constructor parameter, so putting anything else here aborts startup with
+  # "PluginCfg.__init__() got an unexpected keyword argument". The hostnames
+  # configuration is a TOP-LEVEL key named after the plugin's id, which is what
+  # its init() reads (settings.get("hostnames")); see below.
+  searx.plugins.hostnames.SXNGPlugin:
+    active: true
+
+  # Routes DOI links to open copies, so a paywalled landing page becomes a
+  # reachable PDF where one exists.
+  searx.plugins.oa_doi_rewrite.SXNGPlugin:
+    active: true
+
+# Priorities are regexes matched against the result URL's host. `(.*\.)?` is
+# the glob `*.` you probably meant.
+hostnames:
+  high_priority:
+    # Preprints and repositories.
+    - '(.*\.)?arxiv\.org$'
+    - '(.*\.)?biorxiv\.org$'
+    - '(.*\.)?medrxiv\.org$'
+    - '(.*\.)?openreview\.net$'
+    - '(.*\.)?core\.ac\.uk$'
+    - '(.*\.)?base-search\.net$'
+    - '(.*\.)?semanticscholar\.org$'
+    # Code with papers.
+    - '(.*\.)?paperswithcode\.com$'
+    - '(.*\.)?github\.com$'
+  low_priority:
+    # SEO-heavy aggregators that otherwise crowd out the sources above.
+    - '(.*\.)?medium\.com$'
+    - '(.*\.)?quora\.com$'
+    - '(.*\.)?pinterest\.com$'
+
+# Research-first weighting. `weight` (default 1.0) scales an engine's
+# contribution to the merged ranking; `name` must match the built-in name, or a
+# second engine with that module is appended instead of merged.
+engines:
+  - name: arxiv
+    engine: arxiv
+    shortcut: ar
+    categories: [science, general]
+    weight: 2.5
+    disabled: false
+
+  # Google Scholar bans datacenter IPs aggressively; a ban is reported as an
+  # unresponsive engine for seconds to a day (search.suspended_times) and the
+  # other engines still answer.
+  - name: google scholar
+    engine: google_scholar
+    shortcut: gs
+    categories: [science, general]
+    weight: 2.0
+    disabled: false
+
+  - name: semantic scholar
+    engine: semantic_scholar
+    shortcut: se
+    categories: [science, general]
+    weight: 2.0
+    disabled: false
+
+  # CORE needs a free API key: https://core.ac.uk/services/api. With an empty
+  # key the engine fails every query, so it stays disabled until you add one.
+  - name: core.ac.uk
+    engine: core
+    shortcut: cr
+    categories: [science, general]
+    weight: 1.8
+    api_key: ""
+    disabled: true
+
+  - name: base
+    engine: base
+    shortcut: ba
+    categories: [science, general]
+    weight: 1.8
+    disabled: false
+
+  - name: pubmed
+    engine: pubmed
+    shortcut: pm
+    categories: [science]
+    weight: 1.5
+    disabled: false
+
+  - name: github
+    engine: github
+    shortcut: gh
+    categories: [science, it, general]
+    weight: 1.2
+    disabled: false
+
+  - name: hackernews
+    engine: hackernews
+    shortcut: hn
+    categories: [it, general, news]
+    weight: 2.5
+    disabled: false

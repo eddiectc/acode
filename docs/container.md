@@ -1,64 +1,349 @@
 # acode in a container
 
-- **Date:** 2026-11-20
-- **Status:** current for the published image and release binaries
+- **Date:** 2026-11-21
+- **Status:** current for the published image, the compose stack, the launcher
+  scripts, and the release binaries
 - **Related:** [configuration](configuration.md), [architecture](architecture.md),
   [limits](limits.md), [definition of done](definition-of-done.md), and the
   [coding standard](coding-standard.md)
 - **Files:** [`Dockerfile`](../Dockerfile), [`.dockerignore`](../.dockerignore),
+  [`compose.yaml`](../compose.yaml),
+  [`compose.podman.yaml`](../compose.podman.yaml),
+  [`.env.example`](../.env.example),
+  [`scripts/acode-docker`](../scripts/acode-docker),
+  [`scripts/acode-podman`](../scripts/acode-podman),
   [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), and
   [`.github/workflows/release.yml`](../.github/workflows/release.yml)
 
 The image is `ghcr.io/eddiectc/acode`. It carries the `acode` binary, `/bin/sh`,
-git, an SSH client, and CA certificates. The same binary is published as a
-tarball for `linux` and `darwin` on `amd64` and `arm64` for every `v*` tag
-([§7](#7-continuous-integration)), and the image is built from the binaries
-that workflow produced. The image carries **no project toolchain**: derive an
-image from it to add the compilers and test runners a project needs, or put the
-binary into the project's own toolchain image (§6), or the agent cannot build
-or test the workspace it is editing.
+git, an SSH client, and CA certificates, and **no project toolchain**: add the
+compilers and test runners the workspace needs, or the agent cannot build or
+test what it edits (§6). The same binary ships as a tarball for `linux` and
+`darwin` on `amd64` and `arm64` for every `v*` tag, and the image is built from
+the binaries CI produced (§7).
 
 The image is **not** a sandbox, an approval workflow, or a secret store. acode
-does not sandbox itself and has no approval step ([README](../README.md#isolation));
-it runs with the container user's privileges and can reach anything the
-container can reach. Isolation comes from the mounts, the user, and the network.
+runs with the container user's privileges and can reach anything the container
+can reach ([README](../README.md#isolation)); isolation comes from the mounts,
+the user, and the network.
 
-## 1. Quick start
+## 1. Quick start: the compose stack
 
-Mount the workspace and give the process a terminal. The TUI is selected only
-when stdin and stdout are both terminals and `TERM` is set
-([architecture §4](architecture.md#4-modes-and-selection)), so `-it` is part of
-the invocation.
+[`scripts/acode-docker`](../scripts/acode-docker) and
+[`scripts/acode-podman`](../scripts/acode-podman) are the recommended way to
+run acode. They start the stack in [`compose.yaml`](../compose.yaml) — a
+gateway and both web-tool backends already wired to the container — and run the
+agent against the directory you invoke them from:
+
+```sh
+cp .env.example .env         # once, in the stack checkout: upstream key, secrets
+cd ~/src/project
+~/acode/scripts/acode-docker                 # Docker; edit ~/src/project
+~/acode/scripts/acode-podman                 # Podman; arguments identical
+~/acode/scripts/acode-docker -model <id> -task "..."   # flags go to acode
+```
+
+| Service | Image | Role | Port (env) |
+|---|---|---|---|
+| `acode` | built from [`compose/Dockerfile`](../compose/Dockerfile) | The agent | none |
+| `litellm` | `ghcr.io/berriai/litellm:main-stable` | Credential holder, pass-through | 4000 (`LITELLM_PORT`) |
+| `searxng` | `docker.io/searxng/searxng` | `web_search` backend | 8889 (`SEARXNG_PORT`) |
+| `crawl4ai` | `docker.io/unclecode/crawl4ai` | `web_fetch` renderer | 11235 (`CRAWL4AI_PORT`) |
+
+Every port is published on `127.0.0.1` only, and each variable is both the
+container port and the publish — so it moves the listener, the healthcheck, and
+the URL acode uses, not just the host side. Set them in `.env` to run a second
+stack or to dodge a port already in use. The stack image is the Go
+toolchain base of §6 with the `acode` binary copied out of `ACODE_IMAGE`, so
+`go build` and `go test` work on the workspace; it is built on first run, and
+`ACODE_BUILD=1` forces a rebuild.
+
+Each invocation gets a one-off container named `acode-<8 hex>`, so instances do
+not collide and `docker logs acode-<suffix>` addresses one afterwards.
+`ACODE_WORKSPACE` pins a project other than the working directory;
+`ACODE_TTY=0` drops the TTY for piped input; `ACODE_STACK_DIR` overrides where
+the scripts look for `compose.yaml`. The scripts export the paths, print the
+container name to stderr, and pass acode's exit code through.
+
+### Workspace and state
+
+The workspace mount and `working_dir` are `$PWD` with the host path repeated
+inside the container, as §3 requires; `run -e ACODE_WORKSPACE=…` cannot change
+it, because Compose resolves mounts before the container exists. State lives in
+the `acode-state` volume, not a host bind (§3).
+
+Inside the container the state directory is the image user's home, so
+`~/.acode` is `/home/acode/.acode` and that path is the volume:
+
+| What | Path inside | Where on the host |
+|---|---|---|
+| config | `/home/acode/.acode/config.json` | `<volume>/_data/config.json` |
+| sessions | `/home/acode/.acode/sessions/*.jsonl` | `<volume>/_data/sessions/` |
+| agents | `/home/acode/.acode/agents/*.md` | `<volume>/_data/agents/` |
+
+The volume is `<project>_acode-state`, which for this stack is
+`acode-stack_acode-state`. Find the host path rather than guessing it:
+
+```sh
+podman volume inspect -f '{{.Mountpoint}}' acode-stack_acode-state
+```
+
+To change a setting there are three routes, and the first one is not the file:
+
+1. **Compose environment wins over the file.** `ACODE_MODEL`,
+   `ACODE_PROVIDER_BASE_URL`, `ACODE_SEARXNG_URL`, the `ACODE_WEB_FETCH_*`
+   values, and the token are set by `compose.yaml` from `.env`, so editing
+   `model` in `config.json` has no effect while the stack runs. Change those in
+   `.env` and re-run the launcher.
+2. **`/settings` in the TUI** edits every config-file key and writes the file
+   atomically. It shows which layer won (`env`, `flag`, `file`, or `current`),
+   which is how you confirm route 1 is shadowing a value. Saves apply at the
+   next startup, except `ui_rich` and `ui_expand_all`.
+3. **Edit the file on the host** for bulk changes: the volume's `_data/config.json`.
+   Files are owned by the image user, which `keep-id` maps to you, so an editor
+   works; keep mode `0600`. A missing file is not an error, and `/settings`
+   creates it.
+
+`acode` also logs the resolved path at startup as `config=<path>`, which is the
+quickest confirmation that a run is using the file you think it is.
+
+### Podman and UID mapping
+
+Rootless Podman maps the caller onto container root by default, so the image
+user 1000 cannot write the workspace. The Podman launcher merges
+[`compose.podman.yaml`](../compose.podman.yaml), which adds
+`userns_mode: keep-id:uid=1000,gid=1000`. Do not merge that override into Docker
+or rootful Podman, which have no keep-id: Docker users set `ACODE_UID` and
+`ACODE_GID` and rebuild instead (§4).
+
+That override also sets `x-podman: in_pod: false`. `podman-compose` puts every
+service in one pod by default, and a pod owns the network and user namespaces,
+so per-container requests are refused: the man page says `--network` with
+`--pod` means the container joins the *pod's* namespace, and that a userns or
+gidmap "cannot be set on the container level when in a pod". Leaving pod mode
+on also makes acode's container depend on pod containers, which podman rejects
+as `container dependency ... is part of a pod, but container is not`. Turning
+the pod off matches Docker Compose and is required — but it is **not
+sufficient**: the `conmon bytes ""` create failure also appears with the pod
+off, because joining another container's network namespace cannot work under
+keep-id at all. Host networking is the fix; see §1's networking subsection.
+
+If a create still fails that way, podman is hiding the OCI runtime's error.
+`oci_conmon_common.go` only reports `conmon bytes ""` when conmon wrote nothing
+*and* the runtime's log could not be read, so the cause is in a file podman
+failed to collect. Get it directly:
+
+```sh
+podman-compose --verbose -f compose.yaml -f compose.podman.yaml run --rm acode
+podman --log-level=debug create --name acode-probe \
+  --network=container:acode-stack_searxng_1 \
+  --userns=keep-id:uid=1000,gid=1000 localhost/acode-stack:local
+journalctl --user -b --no-pager | tail -50   # crun, SELinux, or AppArmor denial
+```
+
+A `:Z` relabel on a workspace that lives on NFS or another filesystem without
+SELinux label support is a common cause on hosts where `Z` is otherwise
+harmless; drop it from the workspace bind to test.
+
+A stack created *before* `in_pod` was disabled needs one manual teardown,
+because its containers are pod members and podman refuses to make one of them a
+dependency of a container outside the pod, reporting
+`container dependency <id> is part of a pod, but container is not`. Teardown
+cannot fix it by itself: with `in_pod: false` podman-compose's pod list is
+empty (`self.pods = [{"name": pod_name}] if pod_name else []`), so `down` never
+removes the pod. Run:
+
+```sh
+podman-compose -f compose.yaml -f compose.podman.yaml down
+podman pod rm -f pod_acode-stack
+```
+
+`down` keeps the named volumes, so sessions and the Go caches survive.
+`scripts/acode-podman` checks for `pod_<project>` first and stops with these
+instructions rather than letting podman fail cryptically.
+
+### The gateway
+
+LiteLLM here is a **credential holder** and a single egress hop, not a policy
+layer. It has no `model_list`, no routing, no allowlist, and no budget. Its one
+job is to keep the real provider key out of the agent container, so the key
+lives in one place you can rotate instead of in the environment of a process
+that runs arbitrary `run_command` calls.
+
+That is also why the route is a lossless pass-through rather than a deployment:
+a deployment would parse, resolve, and re-encode every request, which is
+translation you do not want from something whose only purpose is to attach a
+`Authorization` header. Pass-through forwards path and body untouched, so the
+upstream behaves exactly as it does without the gateway and what you test
+against is the real wire format.
+
+```yaml
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  pass_through_endpoints:
+    - path: "/go-native"
+      target: "https://opencode.ai/zen/go"
+      include_subpath: true
+      forward_headers: true
+      auth: true
+      headers:
+        Authorization: "Bearer os.environ/OPENCODE_API_KEY"
+```
+
+| Hop | URL |
+|---|---|
+| acode (`ACODE_PROVIDER_BASE_URL` + `/chat/completions`) | `http://litellm:${LITELLM_PORT}/go-native/v1/chat/completions` |
+| LiteLLM forwards the rest of the path to `target` | `https://opencode.ai/zen/go/v1/chat/completions` |
+
+The gateway prefix is part of `ACODE_PROVIDER_BASE_URL`; `target` is the
+upstream base *before* `/v1`. Only the gateway holds `OPENCODE_API_KEY`, and
+`auth: true` requires a LiteLLM key, which is the master key. It is explicit
+because the YAML path hands entries over as raw dictionaries and the endpoint
+check is `auth is not None and str(auth).lower() == "true"`, so the model
+default does not apply.
+
+`forward_headers: true` sends acode's user agent and provider-specific headers
+such as `x-opencode-session` upstream. acode's `Authorization` cannot leak: a
+client header whose name matches a configured header is dropped before the
+merge, so the configured `Bearer` always wins.
+
+`ACODE_MODEL` is forwarded verbatim as the request's `model`, so it must be
+both a models.dev catalog ID — acode resolves the dialect, context window, and
+limits from that entry and rejects an unknown model at startup (exit 2) — and a
+model name the upstream accepts. `target` is a literal URL; LiteLLM expands
+`os.environ/` in `headers`, not there.
+
+#### What a credential holder does not buy
+
+Be clear about the boundary, because "gateway" suggests more:
+
+- **The master key is a spending credential for this route.** Anything that can
+  reach the gateway port with it can call the upstream on your account. It
+  cannot reconfigure the gateway — management endpoints need a database and
+  none is configured — but it can spend. Bound that at the provider: a key with
+  its own quota, or a spend cap on the account.
+- **No per-model budget, rate limit, allowlist, health check, or fallback.**
+  Those belong to a deployment, and there is none. Put them at the provider or
+  in whatever fronts the stack.
+- **It is one rotation point, not a second trust boundary.** A `run_command`
+  child runs as the same user inside the same container, so it can read the
+  master key from its own environment and call the route (see §5). The gateway
+  keeps the *provider* key away from the agent; it does not make the agent
+  container trusted.
+
+### Networking, and why acode uses host mode
+
+`searxng_url` allows plain HTTP only for a loopback host
+([configuration §2.1](configuration.md#21-keys)), and a compose service name is
+not loopback. The first design joined SearXNG's namespace
+(`network_mode: "service:searxng"`), which satisfies that rule but **cannot
+work with keep-id**, and therefore cannot work with rootless Podman:
+
+- `setns()` into a network namespace requires `CAP_SYS_ADMIN` in the user
+  namespace that *owns* it.
+- `--userns=keep-id` puts acode in its own user namespace, a sibling of
+  SearXNG's rather than the same one, so the join is refused.
+- Podman validates neither the combination nor the conflict, so it surfaces as
+  `container create failed (no logs from conmon): conmon bytes "": readObjectStart…`
+  — conmon writes nothing and podman cannot read the OCI runtime's log.
+
+So acode runs with `network_mode: host` and reaches each service through the
+`127.0.0.1` port it already publishes:
+
+| acode variable | Value |
+|---|---|
+| `ACODE_PROVIDER_BASE_URL` | `http://127.0.0.1:${LITELLM_PORT}/go-native/v1` |
+| `ACODE_SEARXNG_URL` | `http://127.0.0.1:${SEARXNG_PORT}` |
+| `ACODE_WEB_FETCH_URL` | `http://127.0.0.1:${CRAWL4AI_PORT}` |
+
+Every one of them is loopback, so the strict rule is satisfied without sharing
+a namespace, and keep-id still maps the caller onto the image user. The stack
+keeps normal egress, which the catalog fetch, any `go mod download`, SearXNG,
+and Crawl4AI all need.
+
+The trade-off is real: a `run_command` server the agent starts binds **host**
+ports, so it is reachable from the host without publishing anything, and two
+instances that start a server on the same port collide. That is the price of
+loopback without namespace sharing; the alternative, a service-name URL, is
+refused by acode's validator for plain HTTP.
+
+SearXNG listens on **8889**, not 8080. `SEARXNG_PORT` is the only knob: the
+image's entrypoint copies it into `GRANIAN_PORT`, so it sets the listener, the
+`127.0.0.1` publish, the healthcheck, `SEARXNG_BASE_URL`, and acode's
+`ACODE_SEARXNG_URL` at once. 8080 is avoided because it is the usual
+dev-server port.
+
+### Tuning web_search
+
+[`compose/searxng/settings.yml`](../compose/searxng/settings.yml) is
+research-weighted: arXiv, Google Scholar, Semantic Scholar, BASE, PubMed,
+GitHub, and Hacker News with raised `weight`, a hostnames plugin that floats
+preprints, repositories, and code-with-paper sites above SEO aggregators, and
+the open-access DOI rewrite. It merges onto the image's defaults, so it edits
+those engines in place.
+
+Four things in it are easy to get wrong, and the file follows the schema rather
+than the shapes that circulate as snippets:
+
+- `hostnames` priorities are **regexes**. A `*.arxiv.org` glob raises
+  `re.error` inside the plugin's `init`, which is called without a handler, so
+  the container fails to start instead of the pattern being ignored. Use
+  `(.*\.)?arxiv\.org$`.
+- Plugins are a **mapping keyed by import path**, and each entry carries
+  exactly one field, `active`. `PluginCfg` has no other parameter, so anything
+  else in the entry aborts startup with a `PluginCfg.__init__()` unexpected
+  keyword argument. The hostnames configuration is therefore **top-level**,
+  under the plugin's id (`hostnames:`), not nested in its entry — putting it in
+  the entry is the mistake that looks right.
+- `request_timeout` is under **`outgoing`**, not `search`.
+- Engine `name` must match the built-in name (`semantic scholar`, not
+  `semanticscholar`; `core.ac.uk`, not `core`) or the entry is appended as a
+  second engine running the same module. Categories are case-sensitive: `it`,
+  not `IT`.
+
+CORE needs a free API key and ships disabled. Google Scholar bans datacenter
+IPs, so expect it to be reported as unresponsive and suspended
+(`search.suspended_times`); the other engines still answer. `web_search` gives
+one call a fixed 15 s, so `outgoing.request_timeout` should stay under it: at
+10 s a slow academic engine still cannot overrun the tool's budget. SearXNG's
+own `search.formats` must include `json`, which is the one entry acode cannot
+work without.
+
+### More than one acode at a time
+
+Run a launcher per project; the generated names keep the containers apart.
+State is shared, so two instances must not open the same session (an exclusive
+per-session `flock`) and concurrent `/settings` writes are last-writer-wins. The
+Go caches are shared and concurrency-safe. Two instances on the same workspace
+race on every edit. For separate state and its own ports, run a second stack
+as its own project (`-p acode-2`, with other `SEARXNG_PORT`, `LITELLM_PORT`,
+and `CRAWL4AI_PORT` values). Instances share the host network, so two that run
+a server on the same port collide there rather than in a container namespace.
+
+The healthchecks in the stack are informational: `depends_on` waits only for
+the services to start, so the first model call may need a retry while LiteLLM
+boots.
+
+## 2. The published image on its own
+
+Without the stack, run the image directly and supply the endpoints yourself.
+`-it` is required for the TUI, which is selected only when stdin and stdout are
+terminals and `TERM` is set
+([architecture §4](architecture.md#4-modes-and-selection)); without it acode
+falls back to batch mode and exits 2 unless a task is supplied.
 
 ```sh
 # Podman, rootless, with the host user mapped onto the image user.
 podman run --rm -it --init \
   --userns=keep-id:uid=1000,gid=1000 \
-  -v "$PWD:$PWD" -w "$PWD" \
-  -v acode-state:/home/acode/.acode \
+  -v "$PWD:$PWD" -w "$PWD" -v acode-state:/home/acode/.acode \
   --network=host \
-  -e ACODE_MODEL \
-  -e ACODE_PROVIDER_BASE_URL \
-  -e ACODE_PROVIDER_TOKEN \
+  -e ACODE_MODEL -e ACODE_PROVIDER_BASE_URL -e ACODE_PROVIDER_TOKEN \
   ghcr.io/eddiectc/acode
 
-# Docker.
-docker run --rm -it --init \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD:$PWD" -w "$PWD" \
-  -v acode-state:/home/acode/.acode \
-  --network=host \
-  -e ACODE_MODEL \
-  -e ACODE_PROVIDER_BASE_URL \
-  -e ACODE_PROVIDER_TOKEN \
-  ghcr.io/eddiectc/acode
-```
+# Docker: --user "$(id -u):$(id -g)" instead of --userns, otherwise identical.
 
-With no task argument the first message supplies it. Without `-it` the process
-is not a terminal, so acode falls back to batch mode and exits 2 unless a task
-is supplied:
-
-```sh
+# No terminal, so batch mode needs a task.
 podman run --rm -v "$PWD:$PWD" -w "$PWD" -v acode-state:/home/acode/.acode \
   --network=host -e ACODE_PROVIDER_TOKEN \
   ghcr.io/eddiectc/acode -model <model-id> -batch -task "Fix the failing test"
@@ -68,191 +353,138 @@ podman run --rm -v "$PWD:$PWD" -w "$PWD" -v acode-state:/home/acode/.acode \
 `run_command` process group through the SDK, but a tool that double-forks can
 still leave a process behind.
 
-## 2. Mounts
+## 3. Mounts
 
 | Mount | Path | Why |
 |---|---|---|
 | Workspace | the project directory, read-write | The code the agent edits. Mount it at the **same absolute path** it has on the host. |
-| State | `/home/acode/.acode`, a named volume | Sessions, the model catalog cache, and the config file. |
+| State | `/home/acode/.acode`, a named volume | Sessions, the catalog cache, and the config file. |
 | Build caches | optional, named volumes | `/home/acode/go/pkg/mod`, `/home/acode/.cache/go-build`, and equivalents avoid cold rebuilds. |
 
-Mount the workspace at its host path (`-v "$PWD:$PWD" -w "$PWD"`) rather than at
-a fixed `/workspace`. A session records its workspace, and `-resume` and the
-work directory reuse that recorded path, so an identical absolute path keeps
-host-created and container-created sessions interchangeable.
-
-On a host with SELinux enforcing, append `:Z` to the workspace bind
-(`-v "$PWD:$PWD:Z"`) or the container user cannot write it.
+A session records its workspace, and `-resume` and the work directory reuse that
+recorded path, so an identical absolute path keeps host-created and
+container-created sessions interchangeable. On an SELinux host append `:Z` to
+the bind (`-v "$PWD:$PWD:Z"`) or the container user cannot write it.
 
 ### The state directory is a volume, not a host bind
 
-`<state-dir>` is a control plane, not just data:
-
-- `<state-dir>/agents/*.md` are operator definitions that carry a **tool grant
-  and prompt** ([configuration](configuration.md)).
-- `<state-dir>/config.json` carries `provider_base_url` and the run budgets.
-- `<state-dir>/sessions/*.jsonl` holds every transcript from every project.
+`<state-dir>` is a control plane: `<state-dir>/agents/*.md` are operator
+definitions that carry a **tool grant and prompt**
+([configuration](configuration.md)), `config.json` carries `provider_base_url`
+and the run budgets, and `sessions/*.jsonl` holds every transcript from every
+project.
 
 `run_command` runs as the container user and can write any absolute path, so a
 read-write bind of a state directory the host also uses lets an injected
 instruction rewrite the base URL, widen a future session's grant, or read
 unrelated transcripts. Use a volume, and reset it with
-`podman volume rm acode-state`.
+`podman volume rm acode-state`. Sharing one read-write also couples the two
+binaries: the session schema and cache versions are fixed per build with no
+migration, and the per-session `flock` stops a host and container process from
+opening the same session at once.
 
-If host and container must share configuration, mount the **file** read-only
-and select it with `-config`, so the agent cannot edit it:
+A volume created by a different UID leaves the 0600 state files unreadable, so
+seed the ownership under the same user namespace the run uses:
+
+```sh
+podman run --rm --userns=keep-id:uid=1000,gid=1000 \
+  -v acode-state:/home/acode/.acode ghcr.io/eddiectc/acode -version
+```
+
+To share host configuration, mount the **file** read-only and select it with
+`-config`; `/settings` and `/agents` then report that they cannot save. A
+writable `config.json` belongs in the volume: acode still *reads* a workspace
+config file at startup, so keep the writable one out of the mount.
 
 ```sh
 -v "$HOME/.acode/config.json:/etc/acode/config.json:ro" \
   -e ACODE_CONFIG=/etc/acode/config.json
 ```
 
-`/settings` and `/agents` then report that they cannot save. A read-only config
-still needs a writable state directory for sessions. Sharing a state directory
-read-write also couples the two binaries: the session schema and cache versions
-are fixed per build with no migration, and an exclusive `flock` per session log
-means a host and container process cannot open the same session concurrently.
+## 4. User, UID, and GID
 
-## 3. User, UID, and GID
-
-The image builds a non-root user with UID/GID **1000**, and the process runs
-with a numeric `USER`, so no name lookup is needed. Match it to the host user:
+The image builds a non-root user with UID/GID **1000** and runs with a numeric
+`USER`, so no name lookup is needed. Match it to the host user:
 
 | Runtime | Invocation |
 |---|---|
 | Podman, rootless | `--userns=keep-id:uid=1000,gid=1000` |
 | Docker | `--user "$(id -u):$(id -g)"` |
-| Either, host UID is not 1000 | Build your own with `--build-arg UID=... --build-arg GID=...` |
+| Either, host UID is not 1000 | Rebuild with `--build-arg UID=... --build-arg GID=...` |
 
-Pick IDs that the base image does not already use: `debian:trixie-slim` has
-system users up to UID 42 and groups up to GID 100, so `GID=100` collides with
-its `users` group and fails the build.
+Pick IDs the base image does not already use: `debian:trixie-slim` has users up
+to UID 42 and groups up to GID 100, so `GID=100` collides with its `users` group.
+A UID mismatch is the most common first-run failure, because state files are
+created 0600 and directories 0700.
 
-A UID mismatch is the most common first-run failure: state files are created
-0600 and directories 0700, so a container user that does not own the volume
-cannot read or extend a session.
-
-## 4. Configuration
+## 5. Configuration, secrets, and network
 
 The three layers still apply inside the container: flag, environment, config
-file ([configuration](configuration.md)). Two rules matter here:
+file ([configuration](configuration.md)). The provider token is
+**environment-only** — deliberately not a config key, so it cannot be baked into
+an image or written to the volume.
 
-- The provider token is **environment-only**. It is deliberately not a config
-  key, so it cannot be baked into an image or written to the volume.
-- `/settings` and `/agents` refuse to write a config file that lives inside the
-  workspace, so a writable `config.json` belongs in the state volume. acode
-  still *reads* a workspace config file at startup, which means a repository
-  can supply one; keep the writable file out of the mount.
+`ACODE_PROVIDER_TOKEN` is read once into memory and never logged. `run_command`
+children get an environment allowlist (`PATH`, `LANG`, `LC_ALL`, `TERM`, `HOME`,
+and a harness `TMPDIR`) and names ending in `_TOKEN`, `_SECRET`, `_KEY`, or
+`_PASSWORD` are denied, so a tool call does not inherit the token by accident.
 
-Seed the volume with the non-secret defaults so the run needs no flags:
+That allowlist is **not** a secrecy boundary: the child runs as the same user,
+so `/proc/<pid>/environ` is readable. Treat the token as visible to anything in
+the container and bound its blast radius at the provider. The same allowlist
+decides what a tool call can authenticate — `SSH_AUTH_SOCK` is not passed, so a
+forwarded agent does not authenticate a `git push`; use an HTTPS remote with a
+credential file under `HOME`, or a key mounted read-only under
+`/home/acode/.ssh`. Do not copy a long-lived key into the workspace or the
+image. `--env-file` keeps the token out of shell history and the inspected
+environment, which `-e` does not.
 
-```sh
-podman volume create acode-state >/dev/null
-# Seed the volume's ownership from the image directory, under the same user
-# namespace the real run uses.
-podman run --rm --userns=keep-id:uid=1000,gid=1000 \
-  -v acode-state:/home/acode/.acode \
-  ghcr.io/eddiectc/acode -version
-```
-
-Then write `/home/acode/.acode/config.json` in the volume:
-
-```json
-{
-  "model": "deepseek-v4.1-flash",
-  "provider_base_url": "http://127.0.0.1:4000/v1",
-  "thinking_effort": "high",
-  "max_turns": 40
-}
-```
-
-### Secrets
-
-`ACODE_PROVIDER_TOKEN` is read once into memory and never logged. The SDK
-gives `run_command` children an explicit environment allowlist (`PATH`,
-`LANG`, `LC_ALL`, `TERM`, `HOME`, and a harness `TMPDIR`) and denies names
-ending in `_TOKEN`, `_SECRET`, `_KEY`, or `_PASSWORD`, so a tool call does not
-inherit the token by accident.
-
-That allowlist is **not** a secrecy boundary. The child runs as the same user,
-so `/proc/<pid>/environ` is readable and the token is in it. Treat the token as
-visible to anything that runs in the container, and bound its blast radius at
-the provider instead.
-
-The same allowlist decides what a tool call can authenticate: `SSH_AUTH_SOCK`
-is not passed, so a forwarded agent does not authenticate a `git push` that the
-agent runs. Use an HTTPS remote with a credential file under `HOME`, or mount a
-key read-only under `/home/acode/.ssh`. Do not copy a long-lived key into the
-workspace or the image.
-
-`--env-file` also keeps the value out of shell history and out of the
-container's inspected environment, which `-e` does not:
+A gateway in front of the real providers is worth it for one reason: the agent
+container then holds a gateway key instead of the provider key, so the real key
+lives in one place you can rotate. `provider_base_url` accepts plain `http` for
+**any** host (it rejects only userinfo, a query, and a fragment, and a path
+prefix is allowed), so both of these work:
 
 ```sh
-install -m 0600 /dev/null acode.env
-printf 'ACODE_PROVIDER_TOKEN=%s\n' "$TOKEN" > acode.env
-podman run --rm -it --env-file acode.env ... ghcr.io/eddiectc/acode
+-e ACODE_PROVIDER_BASE_URL=http://127.0.0.1:4000/v1            # with --network=host
+-e ACODE_PROVIDER_BASE_URL=http://litellm:4000/go-native/v1    # pass-through prefix
 ```
 
-## 5. Network
-
-### A local gateway
-
-A gateway such as LiteLLM in front of the real providers is the recommended
-shape: the container holds only a gateway key, and budget, rate limits, and the
-model allowlist are enforced where you can see them.
-
-`provider_base_url` accepts plain `http` for **any** host — it rejects only
-userinfo, a query, and a fragment, and a path prefix is allowed — so a gateway
-address needs no special handling:
-
-```sh
--e ACODE_PROVIDER_BASE_URL=http://127.0.0.1:4000/v1   # with --network=host
--e ACODE_PROVIDER_BASE_URL=http://litellm:4000/v1     # on a shared container network
-```
-
-The model ID must exist in the models.dev catalog. acode resolves the dialect,
-context window, and base URL from that entry and has no dialect override, so an
-alias that exists only in the gateway is a startup error naming the model
-(exit 2). Name the gateway deployment after the catalog ID and keep the real
-upstream in the gateway's own configuration.
-
-### Network modes
+The catalog rule of §1 applies either way: the model ID must exist in
+models.dev, which fixes the dialect, context window, and limits, so a name that
+exists only in the gateway is a startup error (exit 2). A pass-through gateway
+also forwards that ID upstream verbatim, so it has to be a name the provider
+accepts; a deployment-shaped gateway instead maps it to a real model in the
+gateway's own configuration. Know which one you are running: only the second
+enforces a model allowlist, and neither is a substitute for a spending cap at
+the provider.
 
 | Mode | Egress | Use when |
 |---|---|---|
-| `--network=host` | Unrestricted, and a host gateway is reachable at `127.0.0.1` | The default for a trusted project. |
+| `--network=host` | Unrestricted; a host gateway is reachable at `127.0.0.1` | The default for a trusted project. |
 | A dedicated bridge network | Reaches only what is on that network | The project or its dependencies are untrusted. |
-| `--internal` network plus the gateway | Reaches only the gateway | Inference is the only egress you want to allow. |
-
-```sh
-podman network create --internal acode-net
-podman run -d --name litellm --network acode-net ...      # gateway
-podman run --rm -it --network acode-net \
-  -e ACODE_PROVIDER_BASE_URL=http://litellm:4000/v1 \
-  -e ACODE_PROVIDER_TOKEN \
-  -v "$PWD:$PWD" -w "$PWD" -v acode-state:/home/acode/.acode \
-  ghcr.io/eddiectc/acode
-```
+| `--internal` network plus the gateway | Reaches only the gateway | Inference is the only egress you want. |
 
 An isolated network stops more than inference: `web_fetch`, `web_search`, and
-any `go mod download`, `npm install`, or `cargo fetch` the agent runs also stop
-working. `web_fetch`'s own private-address refusal is a policy in one tool, not
-a network boundary; `run_command` can reach anything the namespace can.
-
-`searxng_url` and `models_dev_url` are stricter than the provider URL: they
-allow HTTP only for loopback hosts ([configuration §2.1](configuration.md#21-keys)).
-A SearXNG or catalog mirror therefore has to share the namespace to be
-reachable over loopback:
+any `go mod download`, `npm install`, or `cargo fetch` also stop working.
+`web_fetch`'s private-address refusal is a policy in one tool, not a network
+boundary, and `run_command` can reach anything the namespace can.
+`searxng_url` and `models_dev_url` are stricter than the provider URL — HTTP
+only for loopback hosts — so a SearXNG or catalog mirror must be reachable on
+loopback, or be served over HTTPS. With a host network that is simply its
+published loopback port:
 
 ```sh
-podman run --rm -it --network container:searxng \
-  -e ACODE_SEARXNG_URL=http://127.0.0.1:8080 \
+podman run --rm -it --network=host \
+  -e ACODE_SEARXNG_URL=http://127.0.0.1:8889 \
   -v "$PWD:$PWD" -w "$PWD" -v acode-state:/home/acode/.acode \
   ghcr.io/eddiectc/acode
 ```
 
-Otherwise serve them over HTTPS.
+Joining the backend's namespace (`--network container:searxng`) reaches the
+same URL but only without a user namespace: `--userns=keep-id` and a netns join
+are mutually exclusive, because `setns()` needs `CAP_SYS_ADMIN` in the user
+namespace that owns the target (§1).
 
 ## 6. Building the image
 
@@ -265,58 +497,49 @@ make dist    # dist/linux/<host-arch>/acode: GOOS=linux, CGO off, -trimpath
 make image   # docker build, VERSION and REVISION taken from git
 ```
 
-The image job in [release.yml](../.github/workflows/release.yml) does the same
-thing with the binaries it built for both linux architectures. By hand:
+[release.yml](../.github/workflows/release.yml) does the same with the binaries
+it built for both linux architectures; by hand:
 
 ```sh
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
   -ldflags "-X main.version=vX.Y.Z" -o dist/linux/arm64/acode ./cmd/acode
 
-docker build \
-  --build-arg VERSION="$(git describe --tags --always)" \
-  --build-arg REVISION="$(git rev-parse HEAD)" \
-  -t acode:local .
+docker build --build-arg VERSION="$(git describe --tags --always)" \
+  --build-arg REVISION="$(git rev-parse HEAD)" -t acode:local .
 ```
 
 | Build argument | Default | Purpose |
 |---|---|---|
 | `RUNTIME_IMAGE` | `debian:trixie-slim` | The base image. |
-| `TARGETARCH` | set by BuildKit | Selects `dist/linux/<arch>/acode`. The classic builder leaves it empty, so the build needs BuildKit. |
+| `TARGETARCH` | set by BuildKit | Selects `dist/linux/<arch>/acode`; the classic builder leaves it empty, so the build needs BuildKit. |
 | `VERSION` | `devel` | `org.opencontainers.image.version` label only. |
 | `REVISION` | `unknown` | `org.opencontainers.image.revision` label only. |
 | `UID`, `GID` | `1000` | The runtime user. |
 
-`VERSION` no longer stamps the binary; the build that produced the binary did
-that, and the label mirrors it. The workflow passes one version string to both
-the binary build and the label, so a published image and its tarball report the
-same thing. A local `make dist` passes no `-ldflags`, so a locally built image
-reports the module version and the VCS revision while its label says what
-`git describe` says.
-
-`--platform linux/amd64,linux/arm64` needs both trees in the context; `make
-dist` writes only the host architecture, so build the other one explicitly as
-above. Nothing is compiled inside the build, so no Go cross-compile is
-involved, but the `RUN` that installs packages still executes inside the target
-platform's container: a multi-platform build on one machine needs binfmt/QEMU
-registered (`docker/setup-qemu-action`, which the workflow uses).
-
-The build context therefore carries `dist/` and `LICENSE` and excludes the
-source; [`.dockerignore`](../.dockerignore) says so.
+`VERSION` no longer stamps the binary: the build that produced the binary did
+that, and the label mirrors it, so a published image and its tarball report the
+same version. A local `make dist` passes no `-ldflags`, so a locally built image
+reports the module and VCS revision while its label says what `git describe`
+says. `--platform linux/amd64,linux/arm64` needs both trees in the context and
+binfmt/QEMU registered; nothing is compiled in the build, but the package `RUN`
+still executes per platform. The context carries `dist/` and `LICENSE` and
+excludes the source ([`.dockerignore`](../.dockerignore)).
 
 ### Adding a toolchain
 
-The image carries no project toolchain, so a derived image supplies one. Three
-shapes work; they differ in where acode comes from:
+Derive an image for the workspace's toolchain. Three shapes work:
 
 | Base image | acode comes from | Use when |
 |---|---|---|
 | `ghcr.io/eddiectc/acode` | the base image | The toolchain is packaged for Debian, or you are adding one or two tools. |
-| The project's own toolchain image | `COPY --from` the acode image | CI and the agent must share a base, and the toolchain is not a Debian package. |
-| The project's own toolchain image | `go install` a pinned tag | You cannot fetch the image or a release tarball, and you accept building acode from source. |
+| The project's toolchain image | `COPY --from` the acode image | CI and the agent must share a base, and the toolchain is not a Debian package. |
+| The project's toolchain image | `go install` a pinned tag | You cannot fetch the image or a release tarball. |
 
-Deriving is the least work: the user, `HOME`, the state directory, `/bin/sh`,
-git, and the CA certificates are already right, and the added layer is only the
-toolchain.
+[`compose/Dockerfile`](../compose/Dockerfile) is the second shape worked out: a
+`golang` base, `COPY --from` the published image, then the user, `HOME`, the
+`0700` state directory, the cache directories of §3, `LANG`, `USER`, `WORKDIR`,
+and `ENTRYPOINT`. Deriving is the least work — the user, `HOME`, `/bin/sh`, git,
+and the CA certificates are already right:
 
 ```dockerfile
 FROM ghcr.io/eddiectc/acode:vX.Y.Z
@@ -327,84 +550,21 @@ RUN apt-get update \
 USER 1000:1000
 ```
 
-Pin the tag in a real project. Do not add Go this way: the distribution's
-`golang-go` trails the version a project pins in `go.mod`, so `go` either
-downloads the required toolchain on first use (`GOTOOLCHAIN=auto`, which needs
-network) or refuses (`GOTOOLCHAIN=local`). A Go project belongs in the second
-shape.
-
-To keep your own base image, take the binary from the release tarball
-(`tar -xzf acode_vX.Y.Z_linux_arm64.tar.gz -C /usr/local/bin acode`) or out of
-the published image. It is built with `CGO_ENABLED=0`, so it runs in any base;
-the price is that the base must supply the rest of the runtime, and you
-reproduce the image's own setup:
-
-```dockerfile
-FROM ghcr.io/eddiectc/acode:vX.Y.Z AS acode
-FROM <your toolchain image>
-
-# Only the file is needed, not the acode image's base. Taking it through a FROM
-# stage keeps the FROM platform rule: a multi-arch build resolves the matching
-# variant of the acode image.
-COPY --from=acode /usr/local/bin/acode /usr/local/bin/acode
-
-# What deriving would have supplied: the image user (§3), its HOME, the 0700
-# state directory (§2), the two cache directories §2 mounts, and a locale. The
-# base may default to a non-root user, hence the explicit USER root. A
-# `golang:*` base keeps GOPATH and its module cache under root-owned /go, and
-# the run_command environment passes HOME and PATH but not GOPATH, so the cache
-# and the installed binaries belong under HOME. Check the base does not already
-# use UID or GID 1000 (§3).
-USER root
-RUN groupadd --gid 1000 acode \
- && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/acode \
-      --shell /bin/bash acode \
- && install -d -o 1000 -g 1000 -m 0700 /home/acode/.acode \
- && install -d -o 1000 -g 1000 -m 0755 /home/acode/.cache \
- && install -d -o 1000 -g 1000 -m 0755 /home/acode/go/pkg/mod \
- && install -d -o 1000 -g 1000 -m 0755 /home/acode/.cache/go-build \
- && install -d -o 1000 -g 1000 -m 0755 /workspace
-ENV HOME=/home/acode \
-    LANG=C.UTF-8 \
-    PATH=/home/acode/go/bin:$PATH
-USER 1000:1000
-WORKDIR /workspace
-ENTRYPOINT ["acode"]
-```
-
-The base must supply `/bin/sh`; `ca-certificates`, git, and an SSH client are
-what the published runtime adds on top of `debian:trixie-slim`
-([Dockerfile](../Dockerfile)), which already has a shell. Without them
-`run_command`, HTTPS fetches, and the git tools fail.
-
-An Alpine base needs `addgroup`/`adduser` instead of `groupadd`/`useradd`. A
-distroless base has neither, nor `/bin/sh`, so `run_command` cannot execute
-anything at all: the SDK invokes `/bin/sh -c`.
-
-`go install` is the last option. Build it in a stage so the module and build
-caches stay out of the final image, and pin the tag:
+Do not add Go that way: the distribution's `golang-go` trails the version in
+`go.mod`, so `go` either downloads a toolchain (`GOTOOLCHAIN=auto`, needs
+network) or refuses (`GOTOOLCHAIN=local`). An Alpine base needs
+`addgroup`/`adduser`; a distroless base has no `/bin/sh`, and the SDK's
+`run_command` is literally `/bin/sh -c`, so nothing can execute. `go install` is
+the last resort — `@latest` is unreproducible, the build needs module-proxy
+access, and the result carries no attestation — so pin the tag and keep the
+caches out of the final image:
 
 ```dockerfile
 FROM golang:1.27.4-trixie AS built
 RUN GOBIN=/out go install github.com/eddiectc/acode/cmd/acode@vX.Y.Z
 ```
 
-Drop the published-image stage and its `Only the file is needed` comment from
-the runtime example, and copy from that stage instead:
-`COPY --from=built /out/acode /usr/local/bin/acode`. Everything else in that
-stage stays: the `USER root` and the whole `RUN` (including the two cache
-directories), `ENV` with `LANG`, `USER`, `WORKDIR`, and `ENTRYPOINT`.
-
-It is the weakest of the three: `@latest` makes the image unreproducible; the
-build needs module-proxy access and a toolchain that satisfies the module's `go`
-directive; the version comes from the module tag, so `acode -version` reports
-`vX.Y.Z` with `vcs revision: unknown`; and the result carries no provenance
-attestation. A release tarball is the same binary the image carries, with a
-`SHA256SUMS` file and a build attestation ([release](release.md)), and the
-image is the artifact CI built, so take one of those rather than rebuild acode.
-Use `go install` when neither can be fetched.
-
-Whichever shape you choose, the agent then runs the project's own checks
+Whichever shape you choose, the agent runs the project's own checks
 (`go test ./...`, `npm test`) against the mounted workspace through
 `run_command`, which is the only verification worth trusting.
 
@@ -412,58 +572,44 @@ Whichever shape you choose, the agent then runs the project's own checks
 
 | Workflow | Trigger | Result |
 |---|---|---|
-| [ci.yml](../.github/workflows/ci.yml) | push to `main`, pull request, manual | Runs `make dod`, the coding standard's §8 gates plus `docs-check`. |
+| [ci.yml](../.github/workflows/ci.yml) | push to `main`, pull request, manual | Runs `make dod`: the coding standard's §8 gates plus `docs-check`. |
 | [release.yml](../.github/workflows/release.yml) | push to `main` or a `v*` tag, pull request, manual | Builds the binaries, attaches them to a tag's GitHub Release, and publishes `ghcr.io/eddiectc/acode` from those binaries. |
 
-The workflow has four jobs:
+The release workflow has four jobs: `version` resolves one version string (the
+tag name, or `devel-<short sha>` on a branch); `binaries` builds it for `linux`
+and `darwin` on `amd64` and `arm64` with `-trimpath` and `-X main.version`;
+`image` downloads the two linux artifacts into `dist/linux/<arch>/acode` and
+builds the image from them; `release` (tags only) packages, attests, and
+uploads the tarballs.
 
-| Job | Does |
-|---|---|
-| `version` | Resolves one version string: the tag name, or `devel-<short sha>` on a branch. |
-| `binaries` | Builds it for `linux` and `darwin` on `amd64` and `arm64` with `-trimpath` and `-X main.version`, and uploads each binary as an artifact. |
-| `image` | Downloads the two linux artifacts, puts them at `dist/linux/<arch>/acode`, and builds the image from them. |
-| `release` | Tags only: packages the tarballs, attests them, and uploads them to the GitHub Release. |
-
-Release assets for a `vX.Y.Z` tag:
-
-| Asset | Contents |
-|---|---|
-| `acode_<version>_<os>_<arch>.tar.gz` | The `acode` binary and `LICENSE`, binary mode 0755, owned 0/0. |
-| `SHA256SUMS` | One SHA-256 per tarball. |
-| Attestation | Build provenance for each tarball; check it with `gh attestation verify`. |
-
-Published tags:
+Release assets for a `vX.Y.Z` tag are `acode_<version>_<os>_<arch>.tar.gz` (the
+binary and `LICENSE`, 0755, owned 0/0), `SHA256SUMS`, and a build attestation
+checked with `gh attestation verify`.
 
 | Event | Image tags | Release assets |
 |---|---|---|
 | Push to `main` | `latest`, `sha-<short>` | none |
 | Tag `vX.Y.Z` | `vX.Y.Z`, `vX.Y`, `vX`, `sha-<short>` | tarballs, `SHA256SUMS`, attestation |
-| Pull request | none; all four binaries build and the image is built for `linux/amd64` only, to prove the tree compiles | none |
+| Pull request | none; all four binaries and a `linux/amd64` image build, to prove the tree compiles | none |
 
-A manual dispatch builds and publishes nothing, from any ref: only a push
-publishes, and the push triggers are `main` and a `v*` tag. That keeps an
-untested branch from reaching the registry through a manual run.
+A manual dispatch publishes nothing from any ref: only a push publishes, and
+the push triggers are `main` and a `v*` tag, so an untested branch cannot reach
+the registry. `latest` tracks `main` HEAD, so a tagged image can be older than
+`latest`; the workflow gates on the tree compiling, and `ci.yml` is the test
+gate. That split relies on branch protection requiring the CI check before a
+merge, because a newer push cancels an in-progress run. The full branch and
+tagging contract is in [release.md](release.md).
 
-Windows is not built. `/bin/sh`, the manual PTY smoke, and `syscall.SIGTERM`
-are Unix, CI is Linux-only, and nothing exercises the CLI on Windows, so a zip
-would be a claim nothing checks. A Windows user builds from source.
-
-`latest` tracks `main` HEAD, so a tagged release image can be older than
-`latest`. The workflow gates on the tree compiling, not on the test suite:
-`ci.yml` is the test gate, and a release is tagged after CI is green. The full
-branch and tagging contract is in [release.md](release.md).
-
-That split relies on branch protection requiring the CI check before a merge to
-`main`. Because a newer push cancels an in-progress CI run, without that
-protection a commit could reach `latest` with no completed test run.
+Windows is not built: `/bin/sh`, the manual PTY smoke, and `syscall.SIGTERM` are
+Unix, CI is Linux-only, and a zip would be a claim nothing checks.
 
 ## 8. Verification status
 
 Checked for this document: the base image tags resolve; UID and GID 1000 are
 free in `debian:trixie-slim`, and `useradd`, `groupadd`, `install`, `apt-get`,
 and `/bin/sh` exist there; `CGO_ENABLED=0` yields a statically linked binary
-(checked with `file` and `ldd`); a `-ldflags "-X main.version=..."` build
-reports that version; the Dockerfile is clean under `hadolint` 2.12.0, and both
+(checked with `file` and `ldd`); a `-ldflags "-X main.version=..."` build reports
+that version; the Dockerfile is clean under `hadolint` 2.12.0, and both
 workflows parse under `actionlint`, which ran its shellcheck pass over every
 `run:` block. For §6, `make dist` wrote `dist/linux/<arch>/acode`, and the
 packaging loop from §7 was run on that tree: it produced
@@ -473,17 +619,100 @@ packaging loop from §7 was run on that tree: it produced
 the module proxy and reported `acode v0.0.1` with `vcs revision: unknown`, which
 is the tag-not-stamp behaviour §6 describes.
 
-Not checked, and required before the first published image is trusted: an
-actual `docker build` and `podman build` on a machine with a working container
-runtime, a TUI session against a real terminal, a real-provider run through a
-gateway, and one end-to-end run of [release.yml](../.github/workflows/release.yml)
-on GitHub. This environment has no working container runtime (the `docker` CLI
-is a Podman shim, and Podman exits with `Error determining cgroups mode`), so
-the §6 image examples were not built and their `useradd`/`install` lines and
-multi-arch behaviour are unverified. The workflow's GitHub-side behaviour is
-also unverified: that an uploaded artifact keeps the `dist/<goos>/<goarch>/`
-path the packaging loop and the Dockerfile expect, that `merge-multiple` yields
-`dist/linux/<arch>/acode` for both linux artifacts, that BuildKit resolves
-`TARGETARCH` inside `COPY`, and that `actions/attest-build-provenance` and
-`gh release` succeed under the job's permissions. The `go install` command
-itself was run on the host; only its stage and `COPY` are untested.
+For §1, `docker-compose` 5.8.0 and `podman-compose` 1.6.0 both resolve
+`compose.yaml` alone and merged with `compose.podman.yaml`; every compose and
+settings YAML file parses; `ghcr.io/eddiectc/acode` resolves `latest`, `v0.1.0`,
+and `sha-*` tags for anonymous pulls; `PWD` selects the mount and `working_dir`
+from any directory, an explicit `ACODE_WORKSPACE` replaces it, Docker Compose
+supplies `PWD` itself when the environment omits it, and `podman-compose` fails
+with the named error instead of an empty path. The two launchers were exercised
+against stub executables for the generated name, `--rm`, `--name`, `-T`,
+`--build`, the path exports, argument passthrough, the workspace guard, and
+exit-code propagation; their exact argument vectors were accepted by the real
+`docker-compose` and `podman-compose` parsers, which then failed only on the
+missing daemon and cgroups. Both scripts pass `bash -n`.
+
+The §1 gateway claims were read from the LiteLLM source at `main` and
+`v1.92.0`, not from its documentation, which still labels pass-through `auth`
+as Enterprise: `pass_through_endpoints.py` builds a subpath route as `target`
+plus the rest of the path, expands `os.environ/` in `headers` only, treats
+`auth` as enforced only when it is explicitly true, and registers the route
+under the proxy's auth dependency; `passthrough/utils.py` drops a client header
+whose name matches a configured one before merging, which is what keeps
+acode's `Authorization` from replacing the upstream key. The gateway itself was
+not started, so the forwarded URLs and the key substitution are read from that
+source rather than observed; the two algorithms were replayed locally against
+the source's own logic instead: `/go-native/v1/chat/completions` and
+`/go-native/v1/responses` resolve to
+`https://opencode.ai/zen/go/v1/chat/completions` and `…/v1/responses`, and a
+client `Authorization` plus `user-agent`, `x-opencode-session`, and
+`content-type` merge to the configured `Bearer` with the other three forwarded.
+
+For §1's SearXNG, `compose/searxng/settings.yml` was checked against the
+SearXNG source rather than its docs: top-level keys against `SCHEMA`,
+`search`/`outgoing` sub-keys, engine modules against `searx/engines/`, entry
+names against the built-in `settings.yml`, categories against
+`CATEGORIES_AS_TABS`, plugin import paths, and `re.compile` on every hostname
+pattern — all pass. That check was initially wrong about the plugin layout: it
+required every top-level key to appear in `SCHEMA`, which pushed the hostnames
+block inside the plugin entry and produced a real startup failure,
+`PluginCfg.__init__() got an unexpected keyword argument 'hostnames'`. The
+layout is now validated by mirroring `PluginStorage.load_settings` and
+`hostnames.SXNGPlugin.init`: `PluginCfg` accepts only `active`, and the
+hostnames patterns are read from the top-level `hostnames` key. That mirror
+reproduces the reported `TypeError` from the nested form and loads the shipped
+form with 12 patterns, and unknown top-level keys are confirmed to survive
+`update_settings`. `SEARXNG_PORT` was confirmed to reach the listener through
+the image entrypoint's `GRANIAN_PORT`. Under both engines with `config`, each of `SEARXNG_PORT`, `LITELLM_PORT`, and
+`CRAWL4AI_PORT` moves its publish, listener, healthcheck, and the URL acode
+uses together; a leftover `SEARXNG_HOST_PORT` from an older `.env` is inert.
+`tools.ParseSearXNGURL` accepts `http://127.0.0.1:8889` and trims a trailing
+slash. The two port mechanics come from the images: SearXNG's entrypoint copies
+`SEARXNG_PORT` into `GRANIAN_PORT`, Crawl4AI's reads `CRAWL4AI_PORT` into
+`GUNICORN_BIND`, and LiteLLM takes the port on its command line, where its own
+`PORT` env var would otherwise apply.
+
+The Podman argv was captured by standing a logging `podman` shim in front of
+`podman-compose` 1.6.0 and inspecting every `create`/`run` it issued. Before
+`x-podman: in_pod: false`, all four services carried `--pod=pod_acode-stack`;
+after it, `--pod` is gone and the other three services keep
+`--network=acode-stack_stack:alias=…`. That fixed the pod-specific failure
+(`container dependency … is part of a pod, but container is not`) but not the
+`conmon bytes ""` create error, which recurred with the pod gone and acode
+still carrying `--network=container:…` plus `--userns keep-id:…`. Removing the
+namespace join is what changes that: the emitted `run` now has
+`--network=host` and keep-id, with no `--pod` and no container netns. The
+`setns()`/`CAP_SYS_ADMIN` explanation is reasoned from the kernel rule and
+podman's `oci_conmon_common.go` error path, not observed: no container was
+created here, so whether host networking clears the failure is unconfirmed.
+
+
+The stale-pod guard in `scripts/acode-podman` was exercised against a `podman`
+stub: it stops with the teardown commands when `pod pod exists` succeeds, and
+proceeds to `podman-compose run` with no `--pod=` in any emitted `create`/`run`
+when it does not. `podman-compose` is unaffected by the extra `config` call the
+guard makes to read the project name, which needs no daemon. Whether removing
+the pod actually clears the dependency error is unconfirmed for the same reason.
+
+Not checked, and required before the first published image is trusted: an actual
+`docker build` and `podman build` on a machine with a working container runtime,
+a TUI session against a real terminal, a real-provider run through a gateway,
+and one end-to-end run of [release.yml](../.github/workflows/release.yml) on
+GitHub. This environment has no working container runtime (the `docker` CLI is a
+Podman shim, and Podman exits with `Error determining cgroups mode`), so the §6
+image examples were not built and their `useradd`/`install` lines and
+multi-arch behaviour are unverified. The §1 stack was not built, started, or
+run: the stack image, acode on host networking reaching the three published
+loopback ports, the in-image
+`/healthz`, `/health/liveliness`, and `/health` probes and their tools, the
+SearXNG `SEARXNG_SECRET`/`SEARXNG_BASE_URL` override of a read-only
+`settings.yml`, and whether that file loads under a real SearXNG, the Crawl4AI
+token, and the native-passthrough path against a
+real provider are unverified, as is the launchers' auto-build. The workflow's
+GitHub-side behaviour is also unverified: that an uploaded artifact keeps the
+`dist/<goos>/<goarch>/` path the packaging loop and the Dockerfile expect, that
+`merge-multiple` yields `dist/linux/<arch>/acode` for both linux artifacts, that
+BuildKit resolves `TARGETARCH` inside `COPY`, and that
+`actions/attest-build-provenance` and `gh release` succeed under the job's
+permissions. The `go install` command itself was run on the host; only its stage
+and `COPY` are untested.

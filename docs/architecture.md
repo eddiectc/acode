@@ -123,6 +123,8 @@ internal/tui/
   terminal.go          # terminal capability and input-mode helpers
 scripts/
   acode-bwrap          # optional bubblewrap sandbox launcher
+  acode-docker         # optional compose stack launcher (docker compose)
+  acode-podman         # optional compose stack launcher (podman-compose)
 docs/
 ```
 
