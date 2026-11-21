@@ -11,6 +11,9 @@
 # ACODE_WORKSPACE pins a project other than $PWD. ACODE_BUILD=1 forces a build;
 # otherwise a missing stack image is built. ACODE_STACK_IMAGE overrides the image
 # name used for that check and must match services.acode.image in compose.yaml.
+# A compose.local.yaml in the stack checkout is passed last, so a machine-local
+# override -- a credential bind, another ACODE_IMAGE -- wins and stays out of
+# git; docs/container.md section 5.
 set -eu
 
 STACK_DIR="${ACODE_STACK_DIR:-$(cd -- "$(dirname -- "$0")/.." && pwd -P)}"
@@ -49,6 +52,14 @@ esac
 export ACODE_WORKSPACE="$WORKSPACE"
 export ACODE_STACK_DIR="$STACK_DIR"
 
+# A per-machine override that is not in git: a credential bind, another
+# ACODE_IMAGE, extra volumes. Compose merges later files over earlier ones, so
+# it goes last and wins; docs/container.md section 5.
+FILES=(-f "$STACK_DIR/compose.yaml" -f "$STACK_DIR/compose.podman.yaml")
+if [ -f "$STACK_DIR/compose.local.yaml" ]; then
+  FILES+=(-f "$STACK_DIR/compose.local.yaml")
+fi
+
 # A stack created before in_pod was disabled lives in a pod, and podman refuses
 # to make a pod container a dependency of one outside it: "container dependency
 # ... is part of a pod, but container is not". podman-compose's `down` cannot
@@ -56,7 +67,7 @@ export ACODE_STACK_DIR="$STACK_DIR"
 # (self.pods = [] when pod_name is None), so the pod and its containers survive
 # the teardown. Detect it and say what to remove instead of letting podman
 # report it as an invalid argument.
-PROJECT="$(podman-compose -f "$STACK_DIR/compose.yaml" -f "$STACK_DIR/compose.podman.yaml" config 2>/dev/null |
+PROJECT="$(podman-compose "${FILES[@]}" config 2>/dev/null |
   awk '/^name: /{print $2; exit}')"
 if [ -n "$PROJECT" ] && podman pod exists "pod_${PROJECT}" 2>/dev/null; then
   cat >&2 <<EOF
@@ -64,7 +75,7 @@ acode-podman: the stack still has pod 'pod_${PROJECT}' from an earlier run that
 used podman-compose's default pod layout. Containers in that pod cannot be
 dependencies of a container outside it. Remove the old stack, then retry:
 
-  podman-compose -f "$STACK_DIR/compose.yaml" -f "$STACK_DIR/compose.podman.yaml" down
+  podman-compose$(printf ' %q' "${FILES[@]}") down
   podman pod rm -f pod_${PROJECT}
 
 \`down\` keeps the named volumes, so acode-state and the Go caches survive.
@@ -85,6 +96,4 @@ if [ "${ACODE_BUILD:-0}" = "1" ] || ! podman image inspect "$IMAGE" >/dev/null 2
 fi
 
 echo "acode-podman: $NAME on $WORKSPACE" >&2
-exec podman-compose \
-  -f "$STACK_DIR/compose.yaml" -f "$STACK_DIR/compose.podman.yaml" \
-  "${RUN[@]}" acode "$@"
+exec podman-compose "${FILES[@]}" "${RUN[@]}" acode "$@"

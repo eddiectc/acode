@@ -330,6 +330,11 @@ cd /path/to/repo
 ~/acode/scripts/acode-docker -model <model-id> -task "Fix the failing test"
 ```
 
+`compose.local.yaml` beside `compose.yaml` is passed last when it exists, which
+is where a machine-local credential mount or image override belongs: it stays
+out of git and out of the tracked stack files
+([container.md §5](docs/container.md#5-configuration-secrets-and-network)).
+
 ## Documentation
 
 | Document | Defines |

@@ -1,0 +1,53 @@
+# Per-machine overrides for the acode compose stack, and the file the agent's
+# own credentials and commit identity belong in. It is not in git; this example
+# is.
+#
+#   cp compose.local.yaml.example compose.local.yaml
+#
+# The launcher scripts pass it last when it exists, so it wins over
+# compose.yaml and compose.podman.yaml; docs/container.md section 5.
+#
+# Keep to keys Docker Compose and podman-compose both honour. The mounts below
+# are plain read-only binds rather than Compose `secrets:` entries, because the
+# two engines differ in how they implement `secrets:` and a bind does not.
+
+services:
+  acode:
+    volumes:
+      # A GitHub PAT for a bot account, so a tool call can push a branch or work
+      # on issues. Create the file on the host, before the first run: an engine
+      # creates a missing bind source as a root-owned directory, and the token
+      # then reads as a directory in a confusing failure.
+      #
+      #   install -d -m 0700 ~/.config/acode
+      #   read -rs TOKEN && printf '%s' "$TOKEN" > ~/.config/acode/github-token
+      #
+      # 0600 and outside any checkout, so neither git nor the image carry it.
+      # `Z` relabels for SELinux and is ignored where SELinux is off.
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/github-token
+        target: /run/secrets/github_token
+        read_only: true
+        bind:
+          selinux: Z
+      # Commit identity. GIT_AUTHOR_NAME and friends in .env would not arrive:
+      # run_command children get an environment allowlist (PATH, LANG, LC_ALL,
+      # TERM, HOME, TMPDIR), and a tool call is what runs `git`. HOME does arrive
+      # and `~/.gitconfig` is where git looks, so the identity is a file.
+      #
+      # A separate file, not your own ~/.gitconfig: that one would attribute what
+      # the agent commits to you. Mounted read-only, so the agent cannot rewrite
+      # the identity it commits under. The email has to belong to the bot account
+      # or GitHub shows the commit unattributed; the `ID+login@users.noreply...`
+      # form always does, and hides a real address.
+      #
+      #   printf '[user]\n\tname = acode-bot\n\temail = 12345+acode-bot@users.noreply.github.com\n' \
+      #     > ~/.config/acode/gitconfig
+      #
+      # Read-only, so `git config --global` fails inside; that is intended.
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/gitconfig
+        target: /home/acode/.gitconfig
+        read_only: true
+        bind:
+          selinux: Z

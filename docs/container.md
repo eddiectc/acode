@@ -9,6 +9,7 @@
 - **Files:** [`Dockerfile`](../Dockerfile), [`.dockerignore`](../.dockerignore),
   [`compose.yaml`](../compose.yaml),
   [`compose.podman.yaml`](../compose.podman.yaml),
+  [`compose.local.yaml.example`](../compose.local.yaml.example),
   [`.env.example`](../.env.example),
   [`scripts/acode-docker`](../scripts/acode-docker),
   [`scripts/acode-podman`](../scripts/acode-podman),
@@ -62,7 +63,10 @@ Each invocation gets a one-off container named `acode-<8 hex>`, so instances do
 not collide and `docker logs acode-<suffix>` addresses one afterwards.
 `ACODE_WORKSPACE` pins a project other than the working directory;
 `ACODE_TTY=0` drops the TTY for piped input; `ACODE_STACK_DIR` overrides where
-the scripts look for `compose.yaml`. The scripts export the paths, print the
+the scripts look for `compose.yaml`. A `compose.local.yaml` in the stack
+checkout is passed last when it exists, so a machine-local override — a
+credential mount, another `ACODE_IMAGE`, an extra volume — beats the tracked
+files without landing in git (§5). The scripts export the paths, print the
 container name to stderr, and pass acode's exit code through.
 
 ### Workspace and state
@@ -360,6 +364,7 @@ still leave a process behind.
 | Workspace | the project directory, read-write | The code the agent edits. Mount it at the **same absolute path** it has on the host. |
 | State | `/home/acode/.acode`, a named volume | Sessions, the catalog cache, and the config file. |
 | Build caches | optional, named volumes | `/home/acode/go/pkg/mod`, `/home/acode/.cache/go-build`, and equivalents avoid cold rebuilds. |
+| Credentials | a file bind from `compose.local.yaml`, read-only | Optional; the agent's own token, if you give it one (§5). |
 
 A session records its workspace, and `-resume` and the work directory reuse that
 recorded path, so an identical absolute path keeps host-created and
@@ -433,11 +438,85 @@ That allowlist is **not** a secrecy boundary: the child runs as the same user,
 so `/proc/<pid>/environ` is readable. Treat the token as visible to anything in
 the container and bound its blast radius at the provider. The same allowlist
 decides what a tool call can authenticate — `SSH_AUTH_SOCK` is not passed, so a
-forwarded agent does not authenticate a `git push`; use an HTTPS remote with a
-credential file under `HOME`, or a key mounted read-only under
+forwarded agent does not authenticate a `git push`; give it an HTTPS remote and
+a credential file under `HOME` instead of a key mounted under
 `/home/acode/.ssh`. Do not copy a long-lived key into the workspace or the
 image. `--env-file` keeps the token out of shell history and the inspected
 environment, which `-e` does not.
+
+A **git commit identity** does not belong in `.env` either, for a version of
+the same reason: `run_command` children get an allowlist of `PATH`, `LANG`,
+`LC_ALL`, `TERM`, `HOME`, and `TMPDIR` (`tools/command.go`, verified against
+aharness v0.4.1), so `GIT_AUTHOR_NAME` set on the `acode` service never reaches
+the `git` a tool call starts. `HOME` *does* arrive — the image sets
+`ENV HOME=/home/acode` ([Dockerfile](../Dockerfile)) — and `~/.gitconfig` is
+where git looks, so the identity is a file: the same local override, one more
+bind.
+
+```sh
+printf '[user]\n\tname = acode-bot\n\temail = 12345+acode-bot@users.noreply.github.com\n' \
+  > ~/.config/acode/gitconfig
+```
+
+Mounted read-only at `/home/acode/.gitconfig`, that file is the only identity
+the agent can commit under. Point it at a separate file rather than your own
+`~/.gitconfig`: the latter would attribute the agent's commits to you. A
+repo-local `git config user.name` in the workspace is the other way, and it
+sticks because the workspace is a host bind — but it re-attributes *your* commits
+in that repository as well. Use an address the bot account has on file, or
+GitHub shows the commit unattributed; its
+`<id>+<login>@users.noreply.github.com` form always is, and keeps a real address
+out of the log. In the container `/home/acode` is not a volume, so a
+`git config --global` run inside lasts only until `--rm` removes the container;
+the read-only mount also makes it fail outright, which is the behaviour you
+want.
+
+A **GitHub token for the agent** belongs in a file, not in that environment:
+`git` and `curl` start as `run_command` children, so an `_TOKEN` name is
+stripped before either sees it, and the tool call is the thing that has to
+authenticate. [`compose.local.yaml.example`](../compose.local.yaml.example) is
+the tracked template for the untracked file that carries it:
+
+```sh
+install -d -m 0700 ~/.config/acode                 # on the host, not in here
+read -rs GITHUB_TOKEN && printf '%s' "$GITHUB_TOKEN" > ~/.config/acode/github-token
+unset GITHUB_TOKEN
+cp compose.local.yaml.example compose.local.yaml   # git-ignored (§1)
+```
+
+The launchers pass that file last, so it mounts the token read-only at
+`/run/secrets/github_token`. It is a plain bind and not a Compose `secrets:`
+entry, because Docker Compose and podman-compose implement `secrets:`
+differently and a bind behaves the same on both. The source has to exist first:
+an engine creates a missing bind source as a root-owned **directory**, and the
+token then reads back as one. On Docker the file must also be readable by the
+container UID (§4).
+
+```sh
+# The GitHub API, which the image carries no `gh` for. Check `repo` in the
+# JSON before relying on a permission.
+curl -sS -H "Authorization: Bearer $(cat /run/secrets/github_token)" \
+  -H 'Accept: application/vnd.github+json' \
+  https://api.github.com/repos/eddiectc/acode
+
+# Push a branch over HTTPS. No SSH key, and the helper keeps the token out of
+# argv and .git/config.
+git -c credential.helper='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/github_token)"; }; f' \
+  push https://github.com/eddiectc/acode.git HEAD:refs/heads/<branch>
+```
+
+Bound the token at GitHub, because the mount cannot bound it: a **fine-grained
+PAT for this one repository** with `Contents: write`, `Issues: write`, and
+`Pull requests: write`, a short expiry, and no `Workflows: write` — that last
+permission is arbitrary code execution in the workflow it touches. Then protect
+`main` with a required pull request, no force-push, and no bypass for the bot,
+so a poisoned issue body or fetched page costs a pull request you review rather
+than a commit you did not make. That is the difference from mounting your own
+`~/.ssh`: a private key is readable wherever it is mounted, it authorises every
+repository you can write, and nothing narrows it afterwards. Either way the file
+is as visible inside the container as the provider token above — same user, same
+namespace — so what holds is the scope of the credential, not the mode on the
+mount.
 
 A gateway in front of the real providers is worth it for one reason: the agent
 container then holds a gateway key instead of the provider key, so the real key
@@ -630,7 +709,20 @@ against stub executables for the generated name, `--rm`, `--name`, `-T`,
 `--build`, the path exports, argument passthrough, the workspace guard, and
 exit-code propagation; their exact argument vectors were accepted by the real
 `docker-compose` and `podman-compose` parsers, which then failed only on the
-missing daemon and cgroups. Both scripts pass `bash -n`.
+missing daemon and cgroups. Both scripts pass `bash -n`. For §5's
+`compose.local.yaml`, the same stubs show it absent from the argument vector
+when the file is missing and appended last when it is present, in both
+launchers, and the stale-pod message names it. The allowlist that keeps
+`GIT_AUTHOR_NAME` out of a tool call was read from `tools/command.go` in
+aharness v0.4.1, and `HOME` is in that allowlist only because the image sets
+`ENV HOME=/home/acode`, so the bind has a directory to land in; `git` with a
+`user` section in a `HOME/.gitconfig` and nothing
+else set committed as that identity and wrote no `user.*` into `.git/config`,
+while the same tree with no gitconfig failed with "Committer identity unknown".
+The token bind itself was not
+mounted: this checkout had no container engine, so the first run on a host is
+what confirms the merge, the mount path, and the UID readability §4 describes —
+`podman-compose … config` shows the resolved mount source before that run.
 
 The §1 gateway claims were read from the LiteLLM source at `main` and
 `v1.92.0`, not from its documentation, which still labels pass-through `auth`
