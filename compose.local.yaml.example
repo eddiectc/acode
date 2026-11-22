@@ -13,23 +13,62 @@
 
 services:
   acode:
-    volumes:
-      # A GitHub PAT for a bot account, so a tool call can push a branch or work
-      # on issues. Create the file on the host, before the first run: an engine
-      # creates a missing bind source as a root-owned directory, and the token
-      # then reads as a directory in a confusing failure.
+    # Build the stack image from Dockerfile.gh instead of compose/Dockerfile, so
+    # the launchers' image carries gh. The result is the published image plus
+    # gh: the Go toolchain of compose/Dockerfile is gone, so uncomment this only
+    # for a workspace that does not need it. ACODE_IMAGE still selects the acode
+    # release, because compose.yaml passes it as a build argument and it is
+    # Dockerfile.gh's FROM (container.md section 6).
+    #
+    # build:
+    #   dockerfile: Dockerfile.gh
+    #
+    # An explicit empty list, not a bare `volumes:`, which YAML reads as null:
+    # podman-compose's container_to_args iterates `cnt.get("volumes", [])`, and
+    # `for v in None` is a TypeError. Uncomment a block below by adding it under
+    # this key.
+    volumes: []
+      # Every mount here is opt-in: uncomment the ones this agent needs and
+      # leave the rest out. A credential it does not need only gives an
+      # injected instruction something to use, and nothing below is required
+      # for the stack to start -- docs/container.md section 5.
       #
-      #   install -d -m 0700 ~/.config/acode
-      #   read -rs TOKEN && printf '%s' "$TOKEN" > ~/.config/acode/github-token
+      # Without the gitconfig block, `git commit` inside the container fails
+      # with "Committer identity unknown" until the workspace or a repo
+      # carries its own user.name/user.email. Without the .ssh block, a push
+      # over an ssh remote fails on host-key verification. Both are intended
+      # defaults for an agent that only edits code.
       #
-      # 0600 and outside any checkout, so neither git nor the image carry it.
-      # `Z` relabels for SELinux and is ignored where SELinux is off.
-      - type: bind
-        source: ${HOME:?HOME is not set}/.config/acode/github-token
-        target: /run/secrets/github_token
-        read_only: true
-        bind:
-          selinux: Z
+      # GitHub authentication is the gh block: a login made on the host, as a
+      # bot account, mounted read-only. It needs an image that carries gh, which
+      # the published image does not. Dockerfile.gh at the repository root is
+      # that image; build it directly for a `podman run` (container.md section
+      # 2), or let the stack build it by uncommenting the block below, which
+      # also drops the Go toolchain (container.md section 6):
+      #
+      #   docker build -f Dockerfile.gh -t acode:gh .
+      #
+      #   install -d -m 0700 ~/.config/acode/gh
+      #   read -rs GH_PAT
+      #   printf '%s' "$GH_PAT" | env -u GH_TOKEN -u GITHUB_TOKEN \
+      #     GH_CONFIG_DIR="$HOME/.config/acode/gh" \
+      #     gh auth login --with-token --insecure-storage
+      #   unset GH_PAT
+      #   GH_CONFIG_DIR="$HOME/.config/acode/gh" gh auth status
+      #
+      # --insecure-storage is what writes the token into hosts.yml; the default
+      # secure storage is the host keyring, which no bind can carry. The target
+      # is fixed rather than chosen: gh reads GH_CONFIG_DIR, then
+      # XDG_CONFIG_HOME/gh, then HOME/.config/gh, and a run_command child gets
+      # neither of the first two (PATH, LANG, LC_ALL, TERM, HOME, TMPDIR).
+      #
+      # - type: bind
+      #   source: ${HOME:?HOME is not set}/.config/acode/gh
+      #   target: /home/acode/.config/gh
+      #   read_only: true
+      #   bind:
+      #     selinux: Z
+      #
       # Commit identity. GIT_AUTHOR_NAME and friends in .env would not arrive:
       # run_command children get an environment allowlist (PATH, LANG, LC_ALL,
       # TERM, HOME, TMPDIR), and a tool call is what runs `git`. HOME does arrive
@@ -45,12 +84,20 @@ services:
       #     > ~/.config/acode/gitconfig
       #
       # Read-only, so `git config --global` fails inside; that is intended.
-      - type: bind
-        source: ${HOME:?HOME is not set}/.config/acode/gitconfig
-        target: /home/acode/.gitconfig
-        read_only: true
-        bind:
-          selinux: Z
+      # This is also where a credential helper for https pushes belongs, when
+      # the image carries gh:
+      #
+      #   [credential "https://github.com"]
+      #       helper =
+      #       helper = !gh auth git-credential
+      #
+      # - type: bind
+      #   source: ${HOME:?HOME is not set}/.config/acode/gitconfig
+      #   target: /home/acode/.gitconfig
+      #   read_only: true
+      #   bind:
+      #     selinux: Z
+      #
       # SSH: the key for pushing, and known_hosts so ssh does not have to learn
       # github.com. One directory bind, not a bind per file, because known_hosts
       # has to sit beside the key at the path ssh reads by default
@@ -71,9 +118,10 @@ services:
       # buys nothing and would let an injected instruction re-pin github.com to
       # a key of its choosing -- the exact attack the file exists to prevent.
       # One line per host you push to; an unknown host then fails loudly.
-      - type: bind
-        source: ${HOME:?HOME is not set}/.config/acode/.ssh
-        target: /home/acode/.ssh
-        read_only: true
-        bind:
-          selinux: Z
+      #
+      # - type: bind
+      #   source: ${HOME:?HOME is not set}/.config/acode/.ssh
+      #   target: /home/acode/.ssh
+      #   read_only: true
+      #   bind:
+      #     selinux: Z
