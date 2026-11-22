@@ -73,9 +73,12 @@ startup error.
 The transcript renders assistant text as rich Markdown with table overlays and
 displays workspace-contained images; `Ctrl-R` toggles rich and raw rendering.
 `Ctrl-T` opens the most recent table, `Ctrl-G` the most recent image, and
-`Ctrl-O` a workspace file picker. Model reasoning appears as a display-only
-`thinking` block; it is never logged, projected, replayed, or printed in batch
-mode. `F3` folds or expands thinking and tool blocks.
+`Ctrl-O` a workspace file picker. The `ui_theme` config key selects the built-in
+`acode` palette or `solarized-dark` / `solarized-light`; the Solarized themes
+paint the full frame so a light palette works on a dark terminal. Model
+reasoning appears as a display-only `thinking` block; it is never logged,
+projected, replayed, or printed in batch mode. `F3` folds or expands thinking
+and tool blocks.
 
 The `todo` tool maintains a checklist: send items to replace it, omit items to
 read it, or send an empty list to clear it. At most one item is `in_progress`.
@@ -208,7 +211,8 @@ request that `/request` shows and applies at the next startup. `searxng_url`
 configures `web_search`; `web_timeout`, `web_fetch_provider`, `web_fetch_url`,
 and `web_fetch_key` configure `web_fetch`. `agent_overrides` routes an agent's
 model, effort, turn cap, and enable state. `ui_rich` and `ui_expand_all` set the
-TUI's initial rendering and fold modes. Run budgets default to unlimited.
+TUI's initial rendering and fold modes; `ui_theme` selects its palette. Run
+budgets default to unlimited.
 
 `/settings` lists every config-file key with its saved or effective value and
 the layer that supplies it, then writes edits atomically. It masks

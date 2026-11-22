@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eddiectc/acode/internal/tui"
 	"github.com/eddiectc/aharness/agent"
 	"github.com/eddiectc/aharness/model"
 	"github.com/eddiectc/aharness/session"
@@ -98,11 +99,12 @@ type config struct {
 	CatalogTimeout time.Duration
 	LogRequests    bool
 	RequireUsage   bool
-	// UIRich and UIExpandAll are the TUI's initial assistant rendering mode and
-	// fold mode. They are display-only preferences from the config file; no
-	// session event records them.
+	// UIRich, UIExpandAll, and UITheme are the TUI's initial assistant
+	// rendering mode, fold mode, and palette. They are display-only preferences
+	// from the config file; no session event records them.
 	UIRich      bool
 	UIExpandAll bool
+	UITheme     string
 	// Pricing is the effective model's catalog price snapshot. It is
 	// observational and may be unavailable when no catalog was loaded.
 	Pricing model.Pricing
@@ -622,6 +624,14 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 	if file.UIExpandAll != nil {
 		uiExpandAll = *file.UIExpandAll
 	}
+	uiTheme := string(tui.ThemeDefault)
+	if file.UITheme != nil {
+		theme, themeErr := tui.ParseTheme(*file.UITheme)
+		if themeErr != nil {
+			return config{}, fmt.Errorf("ui_theme: %w", themeErr)
+		}
+		uiTheme = string(theme)
+	}
 
 	searxngURL = layered(searxngURL, visited["searxng-url"], env.searxngURL, env.searxngURLSet,
 		file.SearXNGURL, "").value()
@@ -728,6 +738,7 @@ func parseConfig(args []string, getenv func(string) string, out io.Writer) (conf
 		RequireUsage:      requireUsageLayer.value(),
 		UIRich:            uiRich,
 		UIExpandAll:       uiExpandAll,
+		UITheme:           uiTheme,
 		ResumeID:          resumeID,
 		ForkID:            forkID,
 		Mode:              mode,
@@ -845,6 +856,7 @@ func configSettingSources(visited map[string]bool, env envSettings, file fileCon
 		"log_requests":       source("log-requests", "ACODE_LOG_REQUESTS", env.logRequestsSet, file.LogRequests != nil),
 		"ui_rich":            source("", "", false, file.UIRich != nil),
 		"ui_expand_all":      source("", "", false, file.UIExpandAll != nil),
+		"ui_theme":           source("", "", false, file.UITheme != nil),
 		"agent_overrides":    source("", "", false, len(file.AgentOverrides) > 0),
 	}
 }

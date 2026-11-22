@@ -34,6 +34,7 @@ type HeadlessOptions struct {
 	RawInput      io.Reader
 	ColorProfile  string
 	NoColor       bool
+	Theme         ThemeName
 	ImageProtocol string
 	Terminal      TerminalInfo
 }
@@ -110,6 +111,7 @@ func RunHeadless(opts HeadlessOptions) (int, error) {
 		Acks:          acks,
 		ColorProfile:  opts.ColorProfile,
 		NoColor:       opts.NoColor,
+		Theme:         opts.Theme,
 		ImageProtocol: opts.ImageProtocol,
 		Terminal:      opts.Terminal,
 	})

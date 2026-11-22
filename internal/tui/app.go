@@ -385,6 +385,7 @@ type Options struct {
 	Acks          chan<- int
 	ColorProfile  string
 	NoColor       bool
+	Theme         ThemeName
 	ImageProtocol string
 	Terminal      TerminalInfo
 }
@@ -1635,11 +1636,16 @@ func (m *App) removeItem(target *transcriptItem) {
 	}
 }
 
+// invalidateRenders drops every rendered item, including the folded bodies
+// that embed palette styles, so a theme change cannot leave one block in the
+// old colors. For rich/raw toggles the extra folded work is small because the
+// unfolded body cache is rebuilt only on the next render.
 func (m *App) invalidateRenders() {
 	m.dirty = true
 	m.imagesDirty = true
 	for _, it := range m.items {
 		it.renderedSet = false
+		it.foldedSet = false
 		it.invalidateLines()
 	}
 }

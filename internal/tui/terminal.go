@@ -25,6 +25,7 @@ type TerminalOptions struct {
 	Stdout        io.Writer
 	ColorProfile  string
 	NoColor       bool
+	Theme         ThemeName
 	ImageProtocol string
 	Terminal      TerminalInfo
 }
@@ -41,6 +42,7 @@ func RunTerminal(opts TerminalOptions) (int, error) {
 		Headless:      false,
 		ColorProfile:  opts.ColorProfile,
 		NoColor:       opts.NoColor,
+		Theme:         opts.Theme,
 		ImageProtocol: opts.ImageProtocol,
 		Terminal:      opts.Terminal,
 	})

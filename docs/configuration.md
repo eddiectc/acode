@@ -52,6 +52,7 @@ before the file is read, and a key in the file cannot move its own location.
   "thinking_effort": "high",
   "ui_rich": true,
   "ui_expand_all": false,
+  "ui_theme": "solarized-dark",
   "agent_overrides": {
     "reviewer": {"model": "kimi-k2.7-code", "max_turns": 12}
   }
@@ -89,14 +90,15 @@ number is rejected so a unit typo cannot silently mean nanoseconds.
 | `log_requests` | boolean | `-log-requests` / `ACODE_LOG_REQUESTS` | Records each projected model request as a debug event; `/request` reads it. A saved change applies at the next startup. |
 | `ui_rich` | boolean | none | TUI initial assistant rendering: `true` is rich markdown, `false` is raw source. Default `true`. Display-only; no session event records it. |
 | `ui_expand_all` | boolean | none | TUI initial block fold mode: `true` expands thinking and tool blocks, `false` folds them. Default `false`. `F3` still toggles only the current process. |
+| `ui_theme` | string | none | TUI palette: `acode` (default), `solarized-dark`, or `solarized-light`. The Solarized palettes paint the full frame background; `acode` leaves the terminal background alone. Display-only; no session event records it. |
 | `agent_overrides` | object | none | Per-agent routing overrides; see §2.2. |
 
 Every key in this table is editable in the TUI `/settings` browser, except
 `agent_overrides`, whose per-agent rows are edited in `/agents`. The browser
 shows the saved value or the current effective value, the winning layer (`file`,
 `flag`, `env`, or `current`), and validates the file's own values before each
-atomic 0600 replacement. A saved value applies at the next startup; `ui_rich`
-and `ui_expand_all` also apply to the current process immediately.
+atomic 0600 replacement. A saved value applies at the next startup; `ui_rich`,
+`ui_expand_all`, and `ui_theme` also apply to the current process immediately.
 `web_fetch_key` is never displayed, prefilled, or echoed; the row reports
 whether it is set, and an incomplete `web_fetch` provider/endpoint pair is
 reported as a warning because either key can be entered first.

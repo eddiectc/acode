@@ -19,7 +19,7 @@ func TestAssistantMarkdownWrapsInsideLabelWidth(t *testing.T) {
 	app.setSize(80, 24)
 	it := app.appendAssistant(1, source)
 
-	for i, row := range app.renderAssistant(newTheme(true), it) {
+	for i, row := range app.renderAssistant(uiThemeFor(true, ThemeDefault), it) {
 		if width := ansi.StringWidth(row); width > app.width {
 			t.Fatalf("assistant row %d is %d cells wide, terminal is %d: %q", i, width, app.width, ansi.Strip(row))
 		}

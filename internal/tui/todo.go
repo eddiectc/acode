@@ -70,7 +70,7 @@ func (m *App) todoView() string {
 	if rows == 0 || m.width <= 0 {
 		return ""
 	}
-	t := newTheme(m.noColor)
+	t := m.uiTheme()
 	visible := rows - 1
 	start, end := todoWindow(m.todos, visible)
 	done := 0

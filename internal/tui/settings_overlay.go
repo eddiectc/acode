@@ -15,6 +15,7 @@ import (
 const (
 	SettingRich      = "ui_rich"
 	SettingExpandAll = "ui_expand_all"
+	SettingTheme     = "ui_theme"
 )
 
 const (
@@ -27,9 +28,9 @@ const (
 )
 
 // settingsOverlay is the /settings config-file browser. A saved value is
-// written atomically to the active config file; the two display preferences
-// apply to this process immediately and every other key is used at the next
-// startup. Secrets are never prefilled, rendered, or echoed.
+// written atomically to the active config file; the display preferences apply
+// to this process immediately and every other key is used at the next startup.
+// Secrets are never prefilled, rendered, or echoed.
 type settingsOverlay struct {
 	view   SettingsView
 	cursor int
@@ -64,6 +65,12 @@ func (m *App) currentSettings() SettingsView {
 			Source: "runtime", SourceDetail: "runtime", Live: true,
 			Options: foldOptions(), Detail: "applies now · runtime value",
 		},
+		{
+			Key: SettingTheme, Label: "theme", Kind: SettingEnum,
+			Value: string(m.effectiveTheme()), Display: themeDisplay(m.effectiveTheme()),
+			Source: "runtime", SourceDetail: "runtime", Live: true,
+			Options: ThemeSettingOptions(), Detail: "applies now · runtime value",
+		},
 	}}
 }
 
@@ -94,10 +101,11 @@ func (m *App) applySettings(view SettingsView) {
 	m.applySettingFields(view.Fields)
 }
 
-// applySettingFields updates the rich/raw and fold modes from the matching
-// rows. Other fields are process-scoped and are not applied here.
+// applySettingFields updates the rich/raw, fold, and theme modes from the
+// matching rows. Other fields are process-scoped and are not applied here.
 func (m *App) applySettingFields(fields []SettingField) {
 	rich, expand := m.rich, m.expandAll
+	theme := m.effectiveTheme()
 	for _, field := range fields {
 		switch field.Key {
 		case SettingRich:
@@ -108,6 +116,10 @@ func (m *App) applySettingFields(fields []SettingField) {
 			if value, err := strconv.ParseBool(field.Value); err == nil {
 				expand = value
 			}
+		case SettingTheme:
+			if value, err := ParseTheme(field.Value); err == nil {
+				theme = value
+			}
 		}
 	}
 	if rich != m.rich {
@@ -117,6 +129,9 @@ func (m *App) applySettingFields(fields []SettingField) {
 	if expand != m.expandAll {
 		m.expandAll = expand
 		m.invalidateFolds()
+	}
+	if theme != m.effectiveTheme() {
+		m.setTheme(theme)
 	}
 	m.ensureContent()
 }
@@ -488,6 +503,13 @@ func (s *settingsOverlay) syncRuntime(m *App) {
 			if value, err := strconv.ParseBool(field.Value); err == nil && value != m.expandAll {
 				field.Value = strconv.FormatBool(m.expandAll)
 				field.Display = foldDisplay(m.expandAll)
+				field.Source = "runtime"
+				field.SourceDetail = "runtime"
+			}
+		case SettingTheme:
+			if field.Value != string(m.effectiveTheme()) {
+				field.Value = string(m.effectiveTheme())
+				field.Display = themeDisplay(m.effectiveTheme())
 				field.Source = "runtime"
 				field.SourceDetail = "runtime"
 			}

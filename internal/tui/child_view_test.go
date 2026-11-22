@@ -150,10 +150,10 @@ func TestChildFocusFinishedIsReadOnly(t *testing.T) {
 }
 
 func TestChildFocusLabelsDelegationSteerAndSanitizesText(t *testing.T) {
-	lines := renderChildHistory(newTheme(true), []agent.HistoryItem{
+	lines := renderChildHistory(uiThemeFor(true, ThemeDefault), []agent.HistoryItem{
 		{Kind: agent.HistoryUser, Run: 1, Source: "delegate", Text: "parent task"},
 		{Kind: agent.HistoryUser, Run: 1, Source: agent.SourceSubagentSteer, Text: "steer\x1b[31m the child"},
-	}, nil, 80, true, true)
+	}, nil, 80, true)
 	body := ansi.Strip(strings.Join(lines, "\n"))
 	if !strings.Contains(body, "task parent task") {
 		t.Fatalf("delegation task label missing:\n%s", body)

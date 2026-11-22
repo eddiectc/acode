@@ -15,7 +15,7 @@ import (
 
 // SetSetting persists one config-file key. The file is re-read and validated
 // as a whole before the atomic replacement, so an external edit or a malformed
-// file is never overwritten. Only the two display preferences apply to this
+// file is never overwritten. Only the display preferences apply to this
 // process; every other key is used at the next startup.
 func (h *tuiHost) SetSetting(key, value string) error {
 	h.mu.Lock()
@@ -28,6 +28,16 @@ func (h *tuiHost) SetSetting(key, value string) error {
 			return fmt.Errorf("%s must be true or false", key)
 		}
 		liveBool = parsed
+	}
+	liveTheme := tui.ThemeDefault
+	if key == tui.SettingTheme {
+		if trimmed != "" {
+			parsed, err := tui.ParseTheme(trimmed)
+			if err != nil {
+				return err
+			}
+			liveTheme = parsed
+		}
 	}
 	changed, err := h.updateConfigFile(func(file *fileConfig) (bool, error) {
 		if err := h.applyConfigSetting(file, key, trimmed); err != nil {
@@ -43,6 +53,8 @@ func (h *tuiHost) SetSetting(key, value string) error {
 		h.cfg.UIRich = liveBool
 	case tui.SettingExpandAll:
 		h.cfg.UIExpandAll = liveBool
+	case tui.SettingTheme:
+		h.cfg.UITheme = string(liveTheme)
 	}
 	return nil
 }
@@ -63,6 +75,8 @@ func (h *tuiHost) ResetSetting(key string) error {
 		h.cfg.UIRich = true
 	case tui.SettingExpandAll:
 		h.cfg.UIExpandAll = false
+	case tui.SettingTheme:
+		h.cfg.UITheme = string(tui.ThemeDefault)
 	}
 	return nil
 }
@@ -273,6 +287,17 @@ func (h *tuiHost) applyConfigSetting(file *fileConfig, key, value string) error 
 			return fmt.Errorf("%s must be true or false", key)
 		}
 		setConfigBool(file, key, enabled)
+	case "ui_theme":
+		if value == "" {
+			file.UITheme = nil
+			return nil
+		}
+		theme, err := tui.ParseTheme(value)
+		if err != nil {
+			return fmt.Errorf("ui_theme: %w", err)
+		}
+		canonical := string(theme)
+		file.UITheme = &canonical
 	case "agent_overrides":
 		return errors.New("agent_overrides is edited in /agents")
 	default:
@@ -414,6 +439,8 @@ func clearConfigSetting(file *fileConfig, key string) (bool, error) {
 		return clearBool(&file.UIRich)
 	case "ui_expand_all":
 		return clearBool(&file.UIExpandAll)
+	case "ui_theme":
+		return clearString(&file.UITheme)
 	case "agent_overrides":
 		return false, errors.New("agent_overrides is edited in /agents")
 	default:
