@@ -6,14 +6,16 @@ name: acode-stack
 
 services:
   acode:
-    build:
-      context: .
-      dockerfile: compose/Dockerfile
-      args:
-        ACODE_IMAGE: ${ACODE_IMAGE:-ghcr.io/eddiectc/acode:latest}
-        UID: ${ACODE_UID:-1000}
-        GID: ${ACODE_GID:-1000}
-    image: localhost/acode-stack:local
+    # The published image: the acode binary, /bin/sh, git, and CA certificates,
+    # and no project toolchain (docs/container.md section 1). The stack builds
+    # nothing by default, so nothing here has to be built before a first run.
+    #
+    # A toolchain is opt-in and yours: a compose.local.yaml can add `build:`
+    # with your own Dockerfile -- Go, Rust, whatever the workspace needs -- and
+    # its own `image:` tag. This repository ships no toolchain image, and the
+    # launchers only build when the merged config declares a build
+    # (docs/container.md section 6).
+    image: ${ACODE_IMAGE:-ghcr.io/eddiectc/acode:latest}
     # `run` makes a one-off container, so instances share this definition.
     init: true
     stdin_open: true
@@ -46,8 +48,9 @@ services:
         bind:
           selinux: Z
       - acode-state:/home/acode/.acode
-      - go-mod-cache:/home/acode/go/pkg/mod
-      - go-build-cache:/home/acode/.cache/go-build
+      # A toolchain image you add brings its own cache directories; they are
+      # declared in the same compose.local.yaml override (docs/container.md
+      # section 6), not here, where nothing would write them.
 
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
@@ -142,6 +145,4 @@ networks:
 
 volumes:
   acode-state:
-  go-mod-cache:
-  go-build-cache:
   searxng-cache:

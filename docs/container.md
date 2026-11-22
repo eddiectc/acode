@@ -15,10 +15,10 @@
   [`Dockerfile`](../Dockerfile), and [`Dockerfile.gh`](../Dockerfile.gh)
 
 The image is `ghcr.io/eddiectc/acode`: the `acode` binary, `/bin/sh`, git, an SSH
-client, and CA certificates, and **no project toolchain** — add the compilers and
-test runners a workspace needs (§6). It is not a sandbox, an approval workflow,
-or a secret store: acode runs with the container user's privileges and can reach
-anything the container can reach ([README](../README.md#isolation)).
+client, and CA certificates, and **no project toolchain** — a run artifact, not a
+build one. A compiler is yours to add (§6). It is not a sandbox, an approval
+workflow, or a secret store: acode runs with the container user's privileges and
+can reach anything the container can reach ([README](../README.md#isolation)).
 
 ## 1. Quick start: the compose stack
 
@@ -36,23 +36,22 @@ cd ~/src/project
 
 | Service | Role | Port (env) |
 |---|---|---|
-| `acode` | The agent, built from [`compose/Dockerfile`](../compose/Dockerfile) | none |
+| `acode` | The agent, from the published image | none |
 | `litellm` | Credential holder, pass-through | 4000 (`LITELLM_PORT`) |
 | `searxng` | `web_search` backend | 8889 (`SEARXNG_PORT`) |
 | `crawl4ai` | `web_fetch` renderer | 11235 (`CRAWL4AI_PORT`) |
 
 Every port is published on `127.0.0.1` only, and each port variable moves the
-listener, the healthcheck, and the URL acode uses together. The stack image adds
-the Go toolchain, so `go build` and `go test` work on the workspace; it is built
-on first run.
+listener, the healthcheck, and the URL acode uses together. The stack builds
+nothing: the first run needs no build step and no compiler (§6).
 
 | Variable | Set in | Effect |
 |---|---|---|
 | `ACODE_WORKSPACE` | the shell | Edit a project other than the working directory. |
 | `ACODE_TTY` | the shell | `0` drops the TTY, for piped input. |
-| `ACODE_BUILD` | the shell | `1` forces a rebuild of the stack image. |
+| `ACODE_BUILD` | the shell | `1` forces a rebuild, when `compose.local.yaml` supplies a `build:`. |
 | `ACODE_STACK_DIR` | the shell | Where the scripts look for `compose.yaml`. |
-| `ACODE_UID`, `ACODE_GID` | `.env` | The image user, when it is not 1000 (§4). |
+| `ACODE_IMAGE` | `.env` | The released image the stack runs, when no `build:` replaces it. |
 
 The shell column matters: the launchers export their own `ACODE_WORKSPACE` and
 `ACODE_STACK_DIR` before calling Compose, and a shell variable beats `.env`, so
@@ -95,7 +94,7 @@ podman-compose -f compose.yaml -f compose.podman.yaml down
 podman pod rm -f pod_acode-stack
 ```
 
-`down` keeps the named volumes, so sessions and the Go caches survive. The
+`down` keeps the named volumes, so sessions survive. The
 launcher checks for `pod_<project>` first and stops with these instructions.
 
 ### More than one acode at a time
@@ -144,7 +143,7 @@ still leave a process behind.
 |---|---|---|
 | Workspace | the project directory, read-write | The code the agent edits. Mount it at the **same absolute path** it has on the host. |
 | State | `/home/acode/.acode`, a named volume | Sessions, the catalog cache, and the config file. |
-| Build caches | optional, named volumes | `/home/acode/go/pkg/mod`, `/home/acode/.cache/go-build`, and equivalents avoid cold rebuilds. |
+| Build caches | optional, named volumes | Only with a toolchain you add: `/home/acode/go/pkg/mod`, `/home/acode/.cache/go-build`, and equivalents avoid cold rebuilds (§6). |
 | Credentials | a read-only bind from `compose.local.yaml` | Optional and opt-in: the `gh` login, the commit identity, and `.ssh` (§5). |
 
 A session records its workspace and `-resume` reuses that recorded path, so an
@@ -190,8 +189,9 @@ The image builds a non-root user with UID/GID **1000** and runs with a numeric
 Pick IDs the base image does not already use: `debian:trixie-slim` has users up
 to UID 42 and groups up to GID 100, so `GID=100` collides with its `users`
 group. A UID mismatch is the most common first-run failure, because state files
-are created 0600 and directories 0700. In the stack, set `ACODE_UID` and
-`ACODE_GID` in `.env` instead.
+are created 0600 and directories 0700. Rootless Podman maps the caller onto 1000
+with `keep-id`; a Docker host user with other ids supplies an image with a user
+of their own, `FROM` the published one, and selects it like any other build (§6).
 
 ## 5. Configuration, secrets, and network
 
@@ -248,7 +248,19 @@ read-only, so an injected instruction cannot re-pin a host key or rewrite the
 identity, and they are plain binds rather than Compose `secrets:` entries, which
 the two engines implement differently. The `gh` target is fixed because a tool
 call gets `HOME` but neither `GH_CONFIG_DIR` nor `XDG_CONFIG_HOME`. `gh` needs an
-image that carries it: [`Dockerfile.gh`](../Dockerfile.gh) (§6). Bound the credential where it is issued, because the mount cannot: a
+image that carries it: [`Dockerfile.gh`](../Dockerfile.gh), selected with a
+`build:` in `compose.local.yaml` (§6).
+
+A missing bind source does not stop the container: both engines create it, so
+`gh` reports no login and `ssh` finds no key while acode still starts — which is
+why these blocks can stay enabled on a machine without them. A *file* source is
+the exception, since the engine creates a directory, and a directory at
+`~/.gitconfig` makes every git call fail with `Is a directory`. The launchers
+therefore seed an empty `~/.config/acode/gitconfig` when the merged config mounts
+it, as the invoking user: git then works, and only `git commit` fails with
+"Committer identity unknown".
+
+Bound the credential where it is issued, because the mount cannot: a
 fine-grained PAT for the one repository with `Contents: write`,
 `Issues: write`, and `Pull requests: write`, a short expiry, and no
 `Workflows: write`; protect `main` with a required pull request and no bypass.
@@ -314,33 +326,44 @@ build -trimpath -ldflags "-X main.version=vX.Y.Z" -o dist/linux/<arch>/acode
 
 ### Adding a toolchain
 
-| Base image | acode comes from | Use when |
-|---|---|---|
-| `ghcr.io/eddiectc/acode` | the base image | The toolchain is packaged for Debian, or you are adding one or two tools. |
-| The project's toolchain image | `COPY --from` the acode image | CI and the agent must share a base, and the toolchain is not a Debian package. |
-| The project's toolchain image | `go install` a pinned tag | You cannot fetch the image or a release tarball. |
+The repository ships **no toolchain image**: which compiler a workspace needs is
+the workspace's business. The stack runs the published image and builds nothing
+(§1), and a toolchain is opt-in per machine, in
+[`compose.local.yaml`](../compose.local.yaml.example) — the same shape as the
+credentials of §5.
 
-Deriving is the least work: [`Dockerfile.gh`](../Dockerfile.gh) is the first
-shape (the `gh` image §5 needs), and [`compose/Dockerfile`](../compose/Dockerfile)
-the second — a `golang` base with `COPY --from` from the published image, which
-is what keeps `go build` working in the stack. To use the first shape in the
-stack, add this to `compose.local.yaml`; the Go toolchain goes away with it.
-`ACODE_IMAGE` still selects the release, both as the build argument and as this
-file's base:
+Two pieces make it yours: a Dockerfile, and a `build:` plus `image:` entry that
+points the launchers at it.
 
 ```yaml
 services:
   acode:
     build:
-      # The launchers export ACODE_STACK_DIR, so the context resolves from any
-      # directory they are called from.
+      # ACODE_STACK_DIR is exported by the launchers, so this resolves from
+      # wherever they are invoked.
       context: ${ACODE_STACK_DIR:-.}
-      dockerfile: Dockerfile.gh
+      dockerfile: Dockerfile.toolchain
+    # A tag of its own: the tracked image: would otherwise be replaced by it.
+    image: localhost/acode-stack:toolchain
 ```
 
-Do not add Go to the published image: the distribution's `golang-go` trails
-`go.mod`, and a distroless base has no `/bin/sh`, which is what `run_command`
-runs.
+Base it on the project's toolchain image and `COPY --from` the published one, so
+the agent and CI share a base. What the file has to keep is the acode binary at
+`/usr/local/bin/acode`, the user and `HOME` from §4, and `ENTRYPOINT ["acode"]`.
+Pin the base tag: the agent runs whatever the Dockerfile fetched. Cache
+directories belong to that image, so declare them beside it — `/home/acode/go/pkg/mod`
+and `/home/acode/.cache/go-build` or their equivalents — rather than in the
+tracked `compose.yaml`, where nothing would write them.
+[`Dockerfile.gh`](../Dockerfile.gh) is the one image shipped here, the published
+image plus the CLI §5 needs; it is selected the same way.
+
+`ACODE_IMAGE` selects the released binary such a Dockerfile copies, and the
+`image:` the stack runs when no `build:` replaces it.
+
+Do not add a toolchain to the published image, or to anything tracked here: the
+distribution's `golang-go` trails `go.mod`, a distroless base has no `/bin/sh`,
+which is what `run_command` runs, and one language's compiler is dead weight for
+every other workspace.
 
 ## 7. Continuous integration
 
@@ -386,8 +409,9 @@ Not verified: a `docker build` and `docker run` (the run above was rootless
 Podman); a TUI session against a real terminal; a real-provider run through the
 gateway; one end-to-end `release.yml` run on GitHub. `Dockerfile.gh` itself has
 not been built — only an untracked equivalent — so its `FROM`, its `USER` switch,
-a multi-arch build, `hadolint`, and the `compose.local.yaml` override that builds
-the stack from it are open. The `setns()`/`CAP_SYS_ADMIN`
+a multi-arch build, and `hadolint` are open. The launchers read the `image:` and
+whether a `build:` exists from the merged config, which was checked against
+recorded `compose config` output rather than a live engine. The `setns()`/`CAP_SYS_ADMIN`
 explanation is reasoned, not observed, and so is whether host networking clears
 the `conmon bytes ""` create failure. From inside the stack, acode reaching the
 three loopback ports, the healthcheck probes, SearXNG's env override of the

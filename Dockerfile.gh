@@ -7,13 +7,14 @@
 # describes, and it is useless without an image that carries gh.
 #
 #   docker build -f Dockerfile.gh -t acode:gh .          # a direct run, §2
-#   # or, for the launchers, uncomment build.dockerfile in compose.local.yaml;
-#   # section 6 of docs/container.md has the snippet and the cost.
+#   # or, for the launchers, select it in compose.local.yaml with a `build:` and
+#   # its own `image:` tag; section 6 of docs/container.md has the shape.
 #
 # It changes nothing else about the image: same user, HOME, WORKDIR, and
-# ENTRYPOINT as the base, and no project toolchain. A workspace that needs Go or
-# Node still needs the toolchain base of compose/Dockerfile (that is the stack
-# image), with these same steps added on top.
+# ENTRYPOINT as the base, and no project toolchain. It adds a CLI, not a
+# compiler. A workspace that needs Go or Rust gets that from its own Dockerfile,
+# selected in compose.local.yaml; this repository ships no toolchain image
+# (docs/container.md section 6).
 #
 # Why not `apt-get install gh`: trixie ships 2.46.0, which the GitHub CLI
 # maintainers call broken (deprecated GitHub APIs) and which Debian removed from

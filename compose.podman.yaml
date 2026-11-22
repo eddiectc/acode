@@ -1,8 +1,9 @@
 # Rootless Podman override for compose.yaml: keep-id maps the caller onto the
 # image user, and in_pod: false gives each service its own namespaces instead
 # of podman-compose's shared pod, which refuses per-container userns and
-# network requests. Do not merge this into Docker or rootful Podman; Docker
-# users set ACODE_UID and ACODE_GID in .env instead.
+# network requests. Do not merge this into Docker or rootful Podman; the stack
+# builds nothing and runs the published image as 1000, so a Docker host user
+# with other ids supplies an image with a matching user instead.
 # See docs/container.md section 4.
 
 x-podman:

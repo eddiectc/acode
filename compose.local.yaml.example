@@ -8,12 +8,25 @@
 
 services:
   acode:
-    # Build the stack image from Dockerfile.gh so a tool call has `gh`. This
-    # drops the Go toolchain (docs/container.md section 6).
+    # Nothing here by default: the stack runs the published image, which carries
+    # no project toolchain, and builds nothing. A toolchain is opt-in and yours
+    # to write -- Go, Rust, or anything else -- so a workspace that has to
+    # compile points build.dockerfile at your own file and gives the result its
+    # own tag. The launchers build only when this file adds a `build:`; the full
+    # snippet is docs/container.md section 6.
+    #
+    # build:
+    #   context: ${ACODE_STACK_DIR:-.}
+    #   dockerfile: Dockerfile.mine
+    # image: localhost/acode-stack:mine
+    #
+    # Dockerfile.gh is the one image this repository ships, for the opt-in gh
+    # login of section 5. It adds a CLI, not a compiler:
     #
     # build:
     #   context: ${ACODE_STACK_DIR:-.}
     #   dockerfile: Dockerfile.gh
+    # image: localhost/acode-stack:gh
     #
     # An explicit empty list, not a bare `volumes:`: YAML reads that as null,
     # and podman-compose then iterates `for v in None`.
