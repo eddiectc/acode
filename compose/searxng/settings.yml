@@ -1,56 +1,36 @@
-# SearXNG for the acode compose stack: research-weighted, JSON enabled.
-#
-# acode's web_search GETs {base}/search?format=json and needs the json format
-# (the image's stock configuration serves html only). Everything not listed
-# here comes from the image's defaults, and `use_default_settings: true` merges
-# this file on top of them, so an `engines` entry under a name the defaults
-# already use *updates* that engine instead of adding a second one.
-#
-# Deliberately absent: `server.secret_key`. Its schema entry has no default, so
-# SearXNG rejects the settings unless SEARXNG_SECRET is set; compose.yaml always
-# sets it, and composing this file elsewhere means doing the same. No other
-# secret belongs in this file.
-#
-# Shapes that look plausible but fail: a `*.example.com` hostname glob (the
-# plugin compiles Python regexes, and `re.error` in its unguarded init aborts
-# startup), the hostnames block nested inside the plugin entry (PluginCfg takes
-# only `active`, so any other key is a TypeError at startup; the block belongs
-# at top level), a plugin list of display names (it is a mapping keyed by import
-# path), `request_timeout` under `search` (it is `outgoing`), engine categories
-# in capitals (`it`, not `IT`), and `semanticscholar`/`core` as engine names
-# (they are `semantic_scholar`, and `core.ac.uk` as the entry name).
+# Research-weighted SearXNG for the acode stack. `use_default_settings` merges
+# this over the image defaults, so an `engines` entry whose `name` matches a
+# built-in updates that engine instead of adding a second one. There is no
+# server.secret_key here: set SEARXNG_SECRET, or SearXNG rejects the file.
+# See docs/container.md section 1.
+
 use_default_settings: true
 
 search:
+  # json is the one format acode cannot work without.
   formats:
     - html
     - json
   safe_search: 0
 
 outgoing:
-  # Per-engine upstream timeout. acode gives one web_search call a fixed 15s
-  # (aharness tools.SearchTimeout), so keep this below that with headroom.
+  # Per-engine upstream timeout, kept under the tool's 15 s call budget.
   request_timeout: 10.0
 
 plugins:
-  # A plugin entry carries exactly one field, `active`: PluginCfg has no other
-  # constructor parameter, so putting anything else here aborts startup with
-  # "PluginCfg.__init__() got an unexpected keyword argument". The hostnames
-  # configuration is a TOP-LEVEL key named after the plugin's id, which is what
-  # its init() reads (settings.get("hostnames")); see below.
+  # An entry takes exactly one field, `active`; the hostnames settings below
+  # are top level because that is where the plugin reads them.
   searx.plugins.hostnames.SXNGPlugin:
     active: true
 
-  # Routes DOI links to open copies, so a paywalled landing page becomes a
-  # reachable PDF where one exists.
+  # Routes DOI links to open copies where one exists.
   searx.plugins.oa_doi_rewrite.SXNGPlugin:
     active: true
 
-# Priorities are regexes matched against the result URL's host. `(.*\.)?` is
-# the glob `*.` you probably meant.
 hostnames:
+  # Regexes matched against the result host, not globs: `*.arxiv.org` raises
+  # re.error in the plugin's init and kills the container.
   high_priority:
-    # Preprints and repositories.
     - '(.*\.)?arxiv\.org$'
     - '(.*\.)?biorxiv\.org$'
     - '(.*\.)?medrxiv\.org$'
@@ -58,18 +38,15 @@ hostnames:
     - '(.*\.)?core\.ac\.uk$'
     - '(.*\.)?base-search\.net$'
     - '(.*\.)?semanticscholar\.org$'
-    # Code with papers.
     - '(.*\.)?paperswithcode\.com$'
     - '(.*\.)?github\.com$'
   low_priority:
-    # SEO-heavy aggregators that otherwise crowd out the sources above.
     - '(.*\.)?medium\.com$'
     - '(.*\.)?quora\.com$'
     - '(.*\.)?pinterest\.com$'
 
-# Research-first weighting. `weight` (default 1.0) scales an engine's
-# contribution to the merged ranking; `name` must match the built-in name, or a
-# second engine with that module is appended instead of merged.
+# `weight` scales an engine's contribution to the merged ranking, and `name`
+# must match the built-in name or a second engine with that module is appended.
 engines:
   - name: arxiv
     engine: arxiv
@@ -78,9 +55,8 @@ engines:
     weight: 2.5
     disabled: false
 
-  # Google Scholar bans datacenter IPs aggressively; a ban is reported as an
-  # unresponsive engine for seconds to a day (search.suspended_times) and the
-  # other engines still answer.
+  # Google Scholar bans datacenter IPs; a ban is reported as an unresponsive
+  # engine while the others still answer.
   - name: google scholar
     engine: google_scholar
     shortcut: gs
@@ -95,8 +71,7 @@ engines:
     weight: 2.0
     disabled: false
 
-  # CORE needs a free API key: https://core.ac.uk/services/api. With an empty
-  # key the engine fails every query, so it stays disabled until you add one.
+  # Needs a free API key: https://core.ac.uk/services/api
   - name: core.ac.uk
     engine: core
     shortcut: cr

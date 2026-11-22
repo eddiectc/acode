@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run acode in the compose stack with podman-compose, editing the current
 # directory. Each invocation gets its own one-off container under a random name,
-# so several instances can run at once; docs/container.md section 8.
+# so several instances can run at once; docs/container.md section 1.
 #
 #   cd ~/src/project
 #   ~/acode/scripts/acode-podman                        # TUI on ~/src/project

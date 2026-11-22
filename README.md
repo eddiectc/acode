@@ -312,8 +312,9 @@ Mount the workspace at its host path and keep the state directory in a named
 volume: `<state-dir>` holds session logs, the config file, and the agent
 definitions that carry tool grants, so it is a control plane rather than
 disposable data. `-it` is required for the TUI; without it acode selects batch
-mode. Use `--env-file` rather than `-e` so a token does not land in the shell
-history or the container's inspected environment.
+mode. Use `--env-file` rather than `-e` so a token does not land on the command
+line or in the shell history; it is still part of the container's `Env`, which
+`inspect` prints.
 
 [container.md](docs/container.md) covers UID mapping, secrets, host versus
 isolated networking, a LiteLLM-style gateway, and how the image is built from
