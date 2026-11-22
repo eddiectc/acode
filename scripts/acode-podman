@@ -8,17 +8,15 @@
 #   ~/acode/scripts/acode-podman -model <id> -task "..."  # arguments go to acode
 #   ACODE_TTY=0 ~/acode/scripts/acode-podman < task.txt   # no TTY, for piped input
 #
-# ACODE_WORKSPACE pins a project other than $PWD. ACODE_BUILD=1 forces a build;
-# otherwise a missing stack image is built. ACODE_STACK_IMAGE overrides the image
-# name used for that check and must match services.acode.image in compose.yaml.
-# A compose.local.yaml in the stack checkout is passed last, so a machine-local
-# override -- a credential bind, another ACODE_IMAGE -- wins and stays out of
-# git; docs/container.md section 5.
+# ACODE_WORKSPACE pins a project other than $PWD. ACODE_BUILD=1 forces a rebuild;
+# otherwise a missing stack image is built. The stack image carries the Go
+# toolchain and gh, and a compose.local.yaml replaces it for another language.
+# That override is passed last, so a machine-local credential or image wins and
+# stays out of git; docs/container.md sections 5 and 6.
 set -eu
 
 STACK_DIR="${ACODE_STACK_DIR:-$(cd -- "$(dirname -- "$0")/.." && pwd -P)}"
 WORKSPACE="${ACODE_WORKSPACE:-$PWD}"
-IMAGE="${ACODE_STACK_IMAGE:-localhost/acode-stack:local}"
 
 [ -f "$STACK_DIR/compose.yaml" ] || {
   echo "acode-podman: no compose.yaml in $STACK_DIR; set ACODE_STACK_DIR" >&2
@@ -60,6 +58,56 @@ if [ -f "$STACK_DIR/compose.local.yaml" ]; then
   FILES+=(-f "$STACK_DIR/compose.local.yaml")
 fi
 
+# The merged config decides what the launcher used to assume: which image the
+# acode service runs, and whether anything is built at all. The default stack
+# builds nothing, so a first run needs no build step; a compose.local.yaml that
+# adds a Dockerfile supplies `build:` and its own tag (docs/container.md
+# section 6). Reading both from the config keeps the tag in one place instead of
+# a second copy of the default here, which is also why ACODE_STACK_IMAGE is gone.
+CONFIG="$(podman-compose "${FILES[@]}" config)" || {
+  echo "acode-podman: podman-compose could not resolve the merged config" >&2
+  exit 1
+}
+PROJECT="$(printf '%s\n' "$CONFIG" | awk '/^name: /{print $2; exit}')"
+# Two-space service keys, four-space keys inside one; awk has no YAML parser, so
+# this tracks the acode block by indentation alone.
+ACODE_BLOCK="$(printf '%s\n' "$CONFIG" | awk '
+  /^  acode:[[:space:]]*$/ { inside = 1; next }
+  inside && /^  [^[:space:]]/ { inside = 0 }
+  inside { print }
+')"
+IMAGE="$(printf '%s\n' "$ACODE_BLOCK" |
+  awk '/^    image:/{ sub(/^    image:[[:space:]]*/, ""); print; exit }' |
+  tr -d "\"'")"
+BUILD="$(printf '%s\n' "$ACODE_BLOCK" | awk '/^    build:/{ print "yes"; exit }')"
+
+# The stack mounts gh, gitconfig, and .ssh always, and a machine with none of
+# them has to still run. The engine creates a missing bind source itself, but as
+# root under Docker, and as a directory even where the config mounts a file -- and
+# a directory at ~/.gitconfig makes every git call fail with "Is a directory".
+# Create the three paths first, as the invoking user and with the right type, so
+# an absent credential is simply absent: gh reports no login, ssh finds no key,
+# and git works. Only paths the merged config actually mounts are touched.
+seed_credential() { # $1 = path under ~/.config/acode, $2 = dir|file
+  seed_path="$HOME/.config/acode/$1"
+  [ -e "$seed_path" ] && return 0
+  mkdir -p "$HOME/.config/acode"
+  chmod 0700 "$HOME/.config/acode"
+  if [ "$2" = dir ]; then
+    mkdir -p "$seed_path"
+    chmod 0700 "$seed_path"
+  else
+    : > "$seed_path"
+    chmod 0644 "$seed_path"
+  fi
+  echo "acode-podman: created an empty $seed_path" >&2
+}
+for seed in "gh dir" "gitconfig file" ".ssh dir"; do
+  case "$CONFIG" in
+    *"/.config/acode/${seed% *}"*) seed_credential "${seed% *}" "${seed##* }" ;;
+  esac
+done
+
 # A stack created before in_pod was disabled lives in a pod, and podman refuses
 # to make a pod container a dependency of one outside it: "container dependency
 # ... is part of a pod, but container is not". podman-compose's `down` cannot
@@ -67,8 +115,6 @@ fi
 # (self.pods = [] when pod_name is None), so the pod and its containers survive
 # the teardown. Detect it and say what to remove instead of letting podman
 # report it as an invalid argument.
-PROJECT="$(podman-compose "${FILES[@]}" config 2>/dev/null |
-  awk '/^name: /{print $2; exit}')"
 if [ -n "$PROJECT" ] && podman pod exists "pod_${PROJECT}" 2>/dev/null; then
   cat >&2 <<EOF
 acode-podman: the stack still has pod 'pod_${PROJECT}' from an earlier run that
@@ -78,7 +124,7 @@ dependencies of a container outside it. Remove the old stack, then retry:
   podman-compose$(printf ' %q' "${FILES[@]}") down
   podman pod rm -f pod_${PROJECT}
 
-\`down\` keeps the named volumes, so acode-state and the Go caches survive.
+\`down\` keeps the named volumes, so acode-state survives.
 EOF
   exit 1
 fi
@@ -91,8 +137,16 @@ RUN=(run --rm --name "$NAME")
 if [ "${ACODE_TTY:-1}" = "0" ]; then
   RUN+=(-T)
 fi
-if [ "${ACODE_BUILD:-0}" = "1" ] || ! podman image inspect "$IMAGE" >/dev/null 2>&1; then
-  RUN+=(--build)
+# Build only when the merged config has something to build. `--build` against a
+# service without a build is an error in one engine and a silent no-op in the
+# other, so the config decides rather than a guess at the image tag.
+if [ -n "$BUILD" ]; then
+  if [ "${ACODE_BUILD:-0}" = "1" ] || [ -z "$IMAGE" ] ||
+    ! podman image inspect "$IMAGE" >/dev/null 2>&1; then
+    RUN+=(--build)
+  fi
+elif [ "${ACODE_BUILD:-0}" = "1" ]; then
+  echo "acode-podman: acode has no build in the merged config; nothing to rebuild" >&2
 fi
 
 echo "acode-podman: $NAME on $WORKSPACE" >&2

@@ -41,6 +41,14 @@ Non-negotiables:
 - User-visible branding is acode: the `acode` binary, `ACODE_*` environment
   variables, `~/.acode` state, the user agent, temp names, and docs. Do not add
   migration code for an older agent's state.
+- The published image carries no project toolchain: it is a run artifact, and a
+  compiler in it would be dead weight for most workspaces. The stack image
+  (`compose/Dockerfile`) is the build environment and does carry Go and gh. A
+  workspace that needs another language copies that file and selects its own in
+  `compose.local.yaml`
+  ([container.md §6](docs/container.md#6-building-the-image)). Never add a
+  toolchain to the published `Dockerfile`, and never work around a missing
+  compiler by adding one to an image that only runs.
 - Route workspace paths through the SDK's `tools.Workspace`/`os.Root` policy;
   do not add a second path root or symlink bypass in the app.
 - Wrap errors with `%w`; branch with `errors.Is`/`errors.As`; never match error
@@ -55,6 +63,14 @@ Non-negotiables:
 - Before finishing, run `make dod` and fix failures. It runs the standard's
   §8 gates (`goimports`, `go vet`, `golangci-lint`, `go test -race -count=1`,
   `go build`, and `govulncheck`) plus `docs-check`.
+- Keep the docs as lean as the code. A reference document states what is true on
+  `main` and why: a change adds the sentence it made necessary, deletes the one
+  it made false, and stops. Do not use docs as a ledger — no transcript of what
+  you ran, tried, rejected, or verified, no restating a rule the document already
+  makes, and no second explanation of one mechanism. A verification section lists
+  open gaps, not a diary. If the prose a change needs is longer than the change,
+  the prose is wrong: prefer a code comment, a commit message, or
+  [docs/plans/](docs/plans/).
 
 When in doubt, prefer the smaller stdlib solution. If other docs conflict, the
 coding standard wins on Go practice; note the conflict in the change.
