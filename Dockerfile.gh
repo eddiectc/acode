@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1
+
+# The published image plus the GitHub CLI, so a tool call can run `gh` against a
+# bot account: docs/container.md section 5. This is section 6's first shape --
+# derive from `ghcr.io/eddiectc/acode` and add one tool -- kept in the tree
+# because a `gh` login is the only GitHub credential route the documentation
+# describes, and it is useless without an image that carries gh.
+#
+#   docker build -f Dockerfile.gh -t acode:gh .          # a direct run, §2
+#   # or, for the launchers, uncomment build.dockerfile in compose.local.yaml;
+#   # section 6 of docs/container.md has the snippet and the cost.
+#
+# It changes nothing else about the image: same user, HOME, WORKDIR, and
+# ENTRYPOINT as the base, and no project toolchain. A workspace that needs Go or
+# Node still needs the toolchain base of compose/Dockerfile (that is the stack
+# image), with these same steps added on top.
+#
+# Why not `apt-get install gh`: trixie ships 2.46.0, which the GitHub CLI
+# maintainers call broken (deprecated GitHub APIs) and which Debian removed from
+# testing, so the pinned release .deb is installed instead and checked against
+# the release's own checksum file.
+
+ARG ACODE_IMAGE=ghcr.io/eddiectc/acode:latest
+
+# The tag lives in the ARG default above, which hadolint cannot see through;
+# callers pin a digest when they need one.
+# hadolint ignore=DL3006
+FROM ${ACODE_IMAGE}
+
+# Must match the ids the base image was built with, which are 1000 in the
+# published one (docs/container.md section 4). The final USER restores them,
+# because the build needs root to apt-get and to write /etc.
+ARG UID=1000
+ARG GID=1000
+# Selects the .deb for the platform being built. BuildKit defines it; the
+# classic builder leaves it empty and the RUN falls back to dpkg's name for the
+# host. Only amd64 and arm64 matter: those are the platforms acode publishes
+# images for, and the two whose gh release assets are named linux_amd64 and
+# linux_arm64.
+ARG TARGETARCH
+ARG GH_VERSION=2.105.0
+
+USER root
+
+# The base has ca-certificates, git, and dpkg but no downloader, so curl is
+# installed here and kept -- it is the fallback client for an API call gh cannot
+# make, and removing it afterwards costs a second layer for no real gain. The
+# .deb depends only on git. The checksum comes from the release's published list
+# rather than a hash typed here, because it differs per architecture.
+RUN set -eux; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    base="https://github.com/cli/cli/releases/download/v${GH_VERSION}"; \
+    deb="gh_${GH_VERSION}_linux_${arch}.deb"; \
+    dir="$(mktemp -d)"; \
+    curl -fsSLo "${dir}/${deb}" "${base}/${deb}"; \
+    curl -fsSLo "${dir}/gh_checksums.txt" "${base}/gh_${GH_VERSION}_checksums.txt"; \
+    grep " ${deb}\$" "${dir}/gh_checksums.txt" > "${dir}/gh.sha256"; \
+    (cd "${dir}" && sha256sum -c gh.sha256); \
+    dpkg -i "${dir}/${deb}"; \
+    rm -rf "${dir}"; \
+    gh --version
+
+# The gh config directory is mounted here (section 5), and the base has no
+# ~/.config: `useradd --create-home` writes Debian's skeleton, which has none.
+# Without this the engine would create the bind target itself, owned by root.
+RUN install -d -o "${UID}" -g "${GID}" -m 0755 /home/acode/.config
+
+# `git push` over an https://github.com remote can then authenticate through the
+# same login, with no credential helper in a mounted .gitconfig -- that mount is
+# optional now, so this is the one place the helper can live. /etc/gitconfig is
+# root-owned, so a tool call cannot rewrite it. The blank helper first clears
+# anything inherited, as `gh auth setup-git` does. Without a gh login the helper
+# has no token, and git reports the authentication failure.
+RUN git config --system credential.https://github.com.helper '' \
+ && git config --system --add credential.https://github.com.helper '!gh auth git-credential'
+
+USER ${UID}:${GID}

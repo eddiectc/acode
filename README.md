@@ -335,6 +335,13 @@ is where a machine-local credential mount or image override belongs: it stays
 out of git and out of the tracked stack files
 ([container.md §5](docs/container.md#5-configuration-secrets-and-network)).
 
+The published image carries no GitHub CLI.
+[Dockerfile.gh](Dockerfile.gh) is that image plus `gh` and `curl`, the
+`~/.config` directory the login bind needs, and a `github.com` credential helper
+in `/etc/gitconfig`, so an `https` push authenticates through the same login. It
+is for the opt-in bot login and changes nothing else
+([container.md §6](docs/container.md#6-building-the-image)).
+
 ## Documentation
 
 | Document | Defines |

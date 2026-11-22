@@ -6,7 +6,8 @@
 - **Related:** [configuration](configuration.md), [architecture](architecture.md),
   [limits](limits.md), [definition of done](definition-of-done.md), and the
   [coding standard](coding-standard.md)
-- **Files:** [`Dockerfile`](../Dockerfile), [`.dockerignore`](../.dockerignore),
+- **Files:** [`Dockerfile`](../Dockerfile), [`Dockerfile.gh`](../Dockerfile.gh),
+  [`.dockerignore`](../.dockerignore),
   [`compose.yaml`](../compose.yaml),
   [`compose.podman.yaml`](../compose.podman.yaml),
   [`compose.local.yaml.example`](../compose.local.yaml.example),
@@ -19,7 +20,9 @@
 The image is `ghcr.io/eddiectc/acode`. It carries the `acode` binary, `/bin/sh`,
 git, an SSH client, and CA certificates, and **no project toolchain**: add the
 compilers and test runners the workspace needs, or the agent cannot build or
-test what it edits (§6). The same binary ships as a tarball for `linux` and
+test what it edits (§6). It carries no `gh` either;
+[`Dockerfile.gh`](../Dockerfile.gh) is the same image plus the GitHub CLI, for
+the opt-in login in §5. The same binary ships as a tarball for `linux` and
 `darwin` on `amd64` and `arm64` for every `v*` tag, and the image is built from
 the binaries CI produced (§7).
 
@@ -364,7 +367,7 @@ still leave a process behind.
 | Workspace | the project directory, read-write | The code the agent edits. Mount it at the **same absolute path** it has on the host. |
 | State | `/home/acode/.acode`, a named volume | Sessions, the catalog cache, and the config file. |
 | Build caches | optional, named volumes | `/home/acode/go/pkg/mod`, `/home/acode/.cache/go-build`, and equivalents avoid cold rebuilds. |
-| Credentials | a file bind from `compose.local.yaml`, read-only | Optional; the agent's own token, if you give it one (§5). |
+| Credentials | a read-only bind from `compose.local.yaml` | Optional and opt-in: the `gh` login, the commit identity, and `.ssh` all ship commented out (§5). |
 
 A session records its workspace, and `-resume` and the work directory reuse that
 recorded path, so an identical absolute path keeps host-created and
@@ -451,7 +454,7 @@ aharness v0.4.1), so `GIT_AUTHOR_NAME` set on the `acode` service never reaches
 the `git` a tool call starts. `HOME` *does* arrive — the image sets
 `ENV HOME=/home/acode` ([Dockerfile](../Dockerfile)) — and `~/.gitconfig` is
 where git looks, so the identity is a file: the same local override, one more
-bind.
+bind, commented out in the example.
 
 ```sh
 printf '[user]\n\tname = acode-bot\n\temail = 12345+acode-bot@users.noreply.github.com\n' \
@@ -459,7 +462,11 @@ printf '[user]\n\tname = acode-bot\n\temail = 12345+acode-bot@users.noreply.gith
 ```
 
 Mounted read-only at `/home/acode/.gitconfig`, that file is the only identity
-the agent can commit under. Point it at a separate file rather than your own
+the agent can commit under. It is opt-in, and the consequence of leaving it out
+is exact: `git commit` fails with "Committer identity unknown" unless the
+workspace or the repository carries its own `user.name`/`user.email`, so an
+agent that only edits code and leaves committing to you needs nothing here.
+Point it at a separate file rather than your own
 `~/.gitconfig`: the latter would attribute the agent's commits to you. A
 repo-local `git config user.name` in the workspace is the other way, and it
 sticks because the workspace is a host bind — but it re-attributes *your* commits
@@ -469,10 +476,14 @@ GitHub shows the commit unattributed; its
 out of the log. In the container `/home/acode` is not a volume, so a
 `git config --global` run inside lasts only until `--rm` removes the container;
 the read-only mount also makes it fail outright, which is the behaviour you
-want.
+want. This file is also where the https credential helper belongs once the image
+carries `gh` (below), unless you rely on the one in
+[`Dockerfile.gh`](../Dockerfile.gh).
 
 An **SSH host key** is the third file, and it is the reason a `git push` over
-an `ssh` remote needs no flags. `.ssh` is usually bound read-only so the key
+an `ssh` remote needs no flags; it is commented out in the example for the same
+reason as the other two, and leaving it out means an `ssh` remote cannot verify
+the host. `.ssh` is usually bound read-only so the key
 cannot be replaced, and that also stops ssh creating `~/.ssh/known_hosts`, so
 every run fails with "Host key verification failed". Passing
 `-o UserKnownHostsFile=…` each time works around it once, which is not a fix.
@@ -504,56 +515,77 @@ to *learn* hosts, that needs `StrictHostKeyChecking=accept-new`, and it belongs
 in `core.sshCommand` in the mounted `.gitconfig` — not on each invocation, which
 is the thing being avoided.
 
-A **GitHub token for the agent** belongs in a file, not in that environment:
-`git` and `curl` start as `run_command` children, so an `_TOKEN` name is
-stripped before either sees it, and the tool call is the thing that has to
-authenticate. [`compose.local.yaml.example`](../compose.local.yaml.example) is
-the tracked template for the untracked file that carries it:
+**GitHub authentication is opt-in, and the example ships it commented out.** A
+credential the agent does not need only gives an injected instruction something
+to use, so `cp compose.local.yaml.example compose.local.yaml` (§1) mounts no
+credential until you uncomment a block. A
+token cannot come from the environment instead: `git`, `curl`, and `gh` start as
+`run_command` children, so an `_TOKEN` name is stripped before any of them sees
+it, and the tool call is what has to authenticate.
+
+The route is **`gh`, logged in as a bot account**, which gives a tool call
+`gh api`, `gh pr`, `gh issue`, and `git push` through one login. It needs an
+image carrying `gh`, which the published image does not: build
+[`Dockerfile.gh`](../Dockerfile.gh) (§6), which is that image and nothing else.
+
+**Log in on the host**, against a copy of the config directory, so the bind never
+carries your own account:
 
 ```sh
-install -d -m 0700 ~/.config/acode                 # on the host, not in here
-read -rs GITHUB_TOKEN && printf '%s' "$GITHUB_TOKEN" > ~/.config/acode/github-token
-unset GITHUB_TOKEN
-cp compose.local.yaml.example compose.local.yaml   # git-ignored (§1)
+install -d -m 0700 ~/.config/acode/gh
+read -rs GH_PAT
+printf '%s' "$GH_PAT" | env -u GH_TOKEN -u GITHUB_TOKEN \
+  GH_CONFIG_DIR="$HOME/.config/acode/gh" \
+  gh auth login --with-token --insecure-storage
+unset GH_PAT
+GH_CONFIG_DIR="$HOME/.config/acode/gh" gh auth status   # the bot, not you
 ```
 
-The launchers pass that file last, so it mounts the token read-only at
-`/run/secrets/github_token`. It is a plain bind and not a Compose `secrets:`
-entry, because Docker Compose and podman-compose implement `secrets:`
-differently and a bind behaves the same on both. The source has to exist first:
-an engine creates a missing bind source as a root-owned **directory**, and the
-token then reads back as one. On Docker the file must also be readable by the
-container UID (§4).
+`--insecure-storage` is not optional here: gh's default secure storage is the
+host keyring, a service no bind can carry, so without the flag `hosts.yml` holds
+a user name and no token and the container reads as logged out. The mount target
+is fixed rather than chosen — gh reads `GH_CONFIG_DIR`, then
+`XDG_CONFIG_HOME/gh`, then `HOME/.config/gh`, and a tool call gets neither of
+the first two — which is why the example hard-codes `/home/acode/.config/gh`.
+Read-only is the same call as the two files above: `gh auth login|switch|logout`,
+`gh auth setup-git`, and `gh config set` fail inside, while the cache and state
+gh writes land in `~/.cache/gh` and `~/.local/state/gh` in the container layer
+and vanish with `--rm`. [`Dockerfile.gh`](../Dockerfile.gh) takes the release
+`.deb` rather than a distribution package, because trixie's gh 2.46.0 is the
+version the CLI maintainers call broken.
 
-```sh
-# The GitHub API, which the image carries no `gh` for. Check `repo` in the
-# JSON before relying on a permission.
-curl -sS -H "Authorization: Bearer $(cat /run/secrets/github_token)" \
-  -H 'Accept: application/vnd.github+json' \
-  https://api.github.com/repos/eddiectc/acode
+To push over an `https://github.com` remote through that login, git needs a
+credential helper. [`Dockerfile.gh`](../Dockerfile.gh) writes one to
+`/etc/gitconfig`, root-owned so a tool call cannot rewrite it, which is why an
+`https` push authenticates even with the optional `.gitconfig` mount absent. If
+you use your own image instead, the same two lines belong in that mount; the
+empty `helper` first clears anything inherited:
 
-# Push a branch over HTTPS. No SSH key, and the helper keeps the token out of
-# argv and .git/config.
-git -c credential.helper='!f() { echo username=x-access-token; echo "password=$(cat /run/secrets/github_token)"; }; f' \
-  push https://github.com/eddiectc/acode.git HEAD:refs/heads/<branch>
-
-# Or push the ssh remote the checkout already has, once §5's `.ssh` bind
-# carries `known_hosts`: no key flag, no host-key flag.
-git push github HEAD:refs/heads/<branch>
+```ini
+[credential "https://github.com"]
+	helper =
+	helper = !gh auth git-credential
 ```
 
-Bound the token at GitHub, because the mount cannot bound it: a **fine-grained
-PAT for this one repository** with `Contents: write`, `Issues: write`, and
-`Pull requests: write`, a short expiry, and no `Workflows: write` — that last
-permission is arbitrary code execution in the workflow it touches. Then protect
-`main` with a required pull request, no force-push, and no bypass for the bot,
-so a poisoned issue body or fetched page costs a pull request you review rather
-than a commit you did not make. That is the difference from mounting your own
-`~/.ssh`: a private key is readable wherever it is mounted, it authorises every
-repository you can write, and nothing narrows it afterwards. Either way the file
-is as visible inside the container as the provider token above — same user, same
-namespace — so what holds is the scope of the credential, not the mode on the
-mount.
+Bound the credential at GitHub, because the mount cannot bound it: a
+**fine-grained PAT for this one repository** with `Contents: write`,
+`Issues: write`, and `Pull requests: write`, a short expiry, and no
+`Workflows: write` — that last permission is arbitrary code execution in the
+workflow it touches. A classic PAT's `repo` scope instead covers every
+repository the account can write, which is why the fine-grained kind is worth
+the extra setup. `gh auth login`'s own help warns that a fine-grained token
+passed to `--with-token` may behave confusingly once a command reaches past the
+resources the token covers, and would rather you set `GH_TOKEN`; that is not an
+option in a container whose `run_command` allowlist strips the name, so the
+confinement has to come from the token's scope rather than from how gh reads it.
+Then protect `main` with a required pull request, no force-push, and no bypass
+for the bot, so a poisoned issue body or fetched page costs a pull request you
+review rather than a commit you did not make. That is the difference from
+mounting your own `~/.ssh`: a private key is readable wherever it is mounted,
+it authorises every repository you can write, and nothing narrows it
+afterwards. Either way the file is as visible inside the container as the
+provider token above — same user, same namespace — so what holds is the scope
+of the credential, not the mode on the mount.
 
 A gateway in front of the real providers is worth it for one reason: the agent
 container then holds a gateway key instead of the provider key, so the real key
@@ -650,6 +682,36 @@ Derive an image for the workspace's toolchain. Three shapes work:
 | `ghcr.io/eddiectc/acode` | the base image | The toolchain is packaged for Debian, or you are adding one or two tools. |
 | The project's toolchain image | `COPY --from` the acode image | CI and the agent must share a base, and the toolchain is not a Debian package. |
 | The project's toolchain image | `go install` a pinned tag | You cannot fetch the image or a release tarball. |
+
+[`Dockerfile.gh`](../Dockerfile.gh) is the first shape worked out, and the image
+§5's GitHub route needs: the published image, `curl` installed because the base
+has no downloader, the pinned `gh` release `.deb` verified against its published
+checksums, `~/.config` created for the bind target, and the
+`https://github.com` credential helper in `/etc/gitconfig`.
+
+```sh
+docker build -f Dockerfile.gh -t acode:gh .        # for a direct run, §2
+```
+
+For the compose stack the launchers build the `acode` service themselves, so the
+file goes in the override and the stack image is built from it:
+
+```yaml
+services:
+  acode:
+    build:
+      dockerfile: Dockerfile.gh
+```
+
+`ACODE_IMAGE` still chooses acode's release: `compose.yaml` passes it as a build
+argument, and it is `Dockerfile.gh`'s `FROM`. It cannot do this job by itself —
+`ACODE_IMAGE` selects only the binary that `compose/Dockerfile` copies, so
+pointing it at an image that carries `gh` would put none of it in the stack.
+
+The cost of that override is the toolchain: the stack image becomes the published
+image plus `gh`, not the `golang` base of §1, so `go build` and `go test` in the
+workspace stop working. For a Go workspace, add the same three steps to
+`compose/Dockerfile` in a local copy instead.
 
 [`compose/Dockerfile`](../compose/Dockerfile) is the second shape worked out: a
 `golang` base, `COPY --from` the published image, then the user, `HOME`, the
@@ -755,11 +817,43 @@ aharness v0.4.1, and `HOME` is in that allowlist only because the image sets
 `ENV HOME=/home/acode`, so the bind has a directory to land in; `git` with a
 `user` section in a `HOME/.gitconfig` and nothing else set committed as that
 identity and wrote no `user.*` into `.git/config`, while the same tree with no
-gitconfig failed with "Committer identity unknown". The token bind itself was
-not mounted: this checkout had no container engine, so the first run on a host
-is what confirms the merge, the mount path, and the UID readability §4
-describes — `podman-compose … config` shows the resolved mount source before
-that run. For §5's SSH files this was exercised against the real service rather
+gitconfig failed with "Committer identity unknown". For §5's `gh` route, a
+stack was then built and run under rootless Podman, and these checks were made
+from inside it — from a `run_command` child, which is the environment the claims
+are about. In an image derived to carry `gh` (2.105.0, from the upstream
+`.deb`), with the config directory bound read-only: `gh auth status`
+resolved `account eddiectc-acode` from `/home/acode/.config/gh/hosts.yml`; the
+same command with `GH_CONFIG_DIR` pointing at an empty directory reported no
+login, so the credential comes from the mount and not from the image; `gh api
+user` and `gh repo view` returned real data; `git credential fill` answered
+through `/etc/gitconfig`'s `!gh auth git-credential` with the account name and a
+40 character password; writing to `/etc/gitconfig` failed with `Permission
+denied` as a non-root user; `touch` in the bound directory failed with
+`Read-only file system`, as did `gh config set`; `~/.config` was owned by
+`acode:acode`; and the child environment was exactly `HOME`, `LANG`, `PATH`,
+`PWD`, `TERM`, and `TMPDIR`, with no `GH_CONFIG_DIR` and no `*_TOKEN` name — the
+allowlist §5 describes, observed rather than read. The example ships that bind
+commented out, so uncommenting it is still what a first run on a host confirms —
+`podman-compose … config` shows the resolved mount source before that run.
+
+The example's new default — every GitHub and identity bind commented out, with
+`volumes: []` as the only active key — was checked by parsing it with a YAML
+decoder, which yields one service key, `volumes`, holding an empty list; it was
+not run through either engine's `config`, because neither is installed here.
+That `volumes: []` matters rather than a bare `volumes:` is read from
+podman-compose 1.6.0's `container_to_args`, which does `for volume in
+cnt.get("volumes", [])`: a null value is returned by `get` and iterating it is a
+`TypeError`. Docker Compose merges the empty list as a no-op, which follows from
+its documented per-path merge of `volumes` but was not observed either.
+
+The reason §5 and `Dockerfile.gh` take the upstream `.deb` instead of the
+distribution package was read from two sources rather than assumed: Debian's
+package tracker lists `gh` 2.46.0 as the version in `stable`, with the package
+removed from `testing` in December 2025 and still carrying open security issues,
+and the CLI's own install notes say the 2.45.x/2.46.x distribution package is
+broken against current GitHub APIs. The 2.105.0 release assets, their
+`gh_<version>_checksums.txt` file, and the `git`-only dependency were confirmed
+against the release itself. For §5's SSH files this was exercised against the real service rather
 than read: with `known_hosts` inside a `~/.ssh` directory bind marked read-only,
 both `ssh -T git@github.com` and `git ls-remote github` succeeded with no
 `UserKnownHostsFile` or `StrictHostKeyChecking` override at the default checking
@@ -833,21 +927,27 @@ when it does not. `podman-compose` is unaffected by the extra `config` call the
 guard makes to read the project name, which needs no daemon. Whether removing
 the pod actually clears the dependency error is unconfirmed for the same reason.
 
-Not checked, and required before the first published image is trusted: an actual
-`docker build` and `podman build` on a machine with a working container runtime,
-a TUI session against a real terminal, a real-provider run through a gateway,
-and one end-to-end run of [release.yml](../.github/workflows/release.yml) on
-GitHub. This environment has no working container runtime (the `docker` CLI is a
-Podman shim, and Podman exits with `Error determining cgroups mode`), so the §6
-image examples were not built and their `useradd`/`install` lines and
-multi-arch behaviour are unverified. The §1 stack was not built, started, or
-run: the stack image, acode on host networking reaching the three published
-loopback ports, the in-image
-`/healthz`, `/health/liveliness`, and `/health` probes and their tools, the
-SearXNG `SEARXNG_SECRET`/`SEARXNG_BASE_URL` override of a read-only
-`settings.yml`, and whether that file loads under a real SearXNG, the Crawl4AI
-token, and the native-passthrough path against a
-real provider are unverified, as is the launchers' auto-build. The workflow's
+Not checked, and required before the first published image is trusted: a
+`docker build` and `docker run` (the run above was rootless Podman), a TUI
+session against a real terminal, a real-provider run through a gateway, and one
+end-to-end run of [release.yml](../.github/workflows/release.yml) on GitHub. The
+image does now build and run under Podman, but not as
+[`Dockerfile.gh`](../Dockerfile.gh) ships it: the built image was a local,
+untracked variant that descended from the stack image so the same layer could
+carry the Go toolchain, and its `gh` install, `~/.config` creation, and
+`/etc/gitconfig` helper were the instructions now in `Dockerfile.gh`.
+`Dockerfile.gh` itself has not been built, so its `FROM ghcr.io/eddiectc/acode`
+base, the `USER root` / `USER 1000:1000` switch over that base, and a multi-arch
+build are unverified; building it once on a host with an engine is what closes
+that. It was not run through `hadolint` either, so the §6 claim about the
+published `Dockerfile` does not extend to it. The §1 stack was also run under Podman, which confirms the container starts,
+that `git`, `go`, and `gh` are on `PATH`, and that the workspace bind lands at
+the host's absolute path; acode on host networking reaching the three published
+loopback ports, the in-image `/healthz`, `/health/liveliness`, and `/health`
+probes and their tools, the SearXNG `SEARXNG_SECRET`/`SEARXNG_BASE_URL` override
+of a read-only `settings.yml`, whether that file loads under a real SearXNG, and
+the Crawl4AI token are still unverified from inside it, as is the
+native-passthrough path against a real provider. The workflow's
 GitHub-side behaviour is also unverified: that an uploaded artifact keeps the
 `dist/<goos>/<goarch>/` path the packaging loop and the Dockerfile expect, that
 `merge-multiple` yields `dist/linux/<arch>/acode` for both linux artifacts, that
