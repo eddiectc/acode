@@ -5,3 +5,5 @@
 .issues/
 /.env
 /compose.local.yaml
+/Dockerfile.local
+/build.local.sh
