@@ -41,14 +41,14 @@ Non-negotiables:
 - User-visible branding is acode: the `acode` binary, `ACODE_*` environment
   variables, `~/.acode` state, the user agent, temp names, and docs. Do not add
   migration code for an older agent's state.
-- The container images carry no project toolchain, and that is the design: the
-  image is a run artifact, not a build one. A toolchain is opt-in and supplied
-  by whoever runs the agent — Go, Rust, or any other compiler — in their own
-  Dockerfile, selected through `compose.local.yaml`
+- The published image carries no project toolchain: it is a run artifact, and a
+  compiler in it would be dead weight for most workspaces. The stack image
+  (`compose/Dockerfile`) is the build environment and does carry Go and gh. A
+  workspace that needs another language copies that file and selects its own in
+  `compose.local.yaml`
   ([container.md §6](docs/container.md#6-building-the-image)). Never add a
-  compiler to `Dockerfile`, `Dockerfile.gh`, or any other tracked image, and
-  never add a toolchain image to the repository. A compiler missing from a
-  running container is a diagnosis to report, not a change to make here.
+  toolchain to the published `Dockerfile`, and never work around a missing
+  compiler by adding one to an image that only runs.
 - Route workspace paths through the SDK's `tools.Workspace`/`os.Root` policy;
   do not add a second path root or symlink bypass in the app.
 - Wrap errors with `%w`; branch with `errors.Is`/`errors.As`; never match error

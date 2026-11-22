@@ -6,16 +6,17 @@ name: acode-stack
 
 services:
   acode:
-    # The published image: the acode binary, /bin/sh, git, and CA certificates,
-    # and no project toolchain (docs/container.md section 1). The stack builds
-    # nothing by default, so nothing here has to be built before a first run.
-    #
-    # A toolchain is opt-in and yours: a compose.local.yaml can add `build:`
-    # with your own Dockerfile -- Go, Rust, whatever the workspace needs -- and
-    # its own `image:` tag. This repository ships no toolchain image, and the
-    # launchers only build when the merged config declares a build
-    # (docs/container.md section 6).
-    image: ${ACODE_IMAGE:-ghcr.io/eddiectc/acode:latest}
+    # The stack image: a Go toolchain, the released binary, and gh, so `go build`,
+    # `go test`, and a push work on the workspace (docs/container.md section 6).
+    # Another language copies compose/Dockerfile and points `dockerfile:` at it.
+    build:
+      context: .
+      dockerfile: compose/Dockerfile
+      args:
+        ACODE_IMAGE: ${ACODE_IMAGE:-ghcr.io/eddiectc/acode:latest}
+        UID: ${ACODE_UID:-1000}
+        GID: ${ACODE_GID:-1000}
+    image: localhost/acode-stack:local
     # `run` makes a one-off container, so instances share this definition.
     init: true
     stdin_open: true
@@ -48,9 +49,32 @@ services:
         bind:
           selinux: Z
       - acode-state:/home/acode/.acode
-      # A toolchain image you add brings its own cache directories; they are
-      # declared in the same compose.local.yaml override (docs/container.md
-      # section 6), not here, where nothing would write them.
+      - go-mod-cache:/home/acode/go/pkg/mod
+      - go-build-cache:/home/acode/.cache/go-build
+      # Always on, and read-only. A machine with none of these still runs: the
+      # launchers create an empty directory or file first, so gh reports no
+      # login and ssh finds no key instead of the engine leaving root-owned
+      # paths behind (docs/container.md section 5). The gh target is fixed
+      # because a tool call gets HOME but neither GH_CONFIG_DIR nor
+      # XDG_CONFIG_HOME; known_hosts sits beside the key at the path ssh reads.
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/gh
+        target: /home/acode/.config/gh
+        read_only: true
+        bind:
+          selinux: Z
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/gitconfig
+        target: /home/acode/.gitconfig
+        read_only: true
+        bind:
+          selinux: Z
+      - type: bind
+        source: ${HOME:?HOME is not set}/.config/acode/.ssh
+        target: /home/acode/.ssh
+        read_only: true
+        bind:
+          selinux: Z
 
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
@@ -145,4 +169,6 @@ networks:
 
 volumes:
   acode-state:
+  go-mod-cache:
+  go-build-cache:
   searxng-cache:

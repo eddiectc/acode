@@ -1,63 +1,24 @@
-# Per-machine overrides for the acode stack, and where the agent's own
-# credentials belong. Not in git:
+# Per-machine overrides for the acode stack. Not in git:
 #
 #   cp compose.local.yaml.example compose.local.yaml
 #
-# The launchers pass it last, so it wins over the tracked files. The mount
-# commands are in docs/container.md section 5.
+# The launchers pass it last, so it wins over the tracked files. The credentials
+# of docs/container.md section 5 are mounted by compose.yaml itself, so nothing
+# here is needed to run the stack.
 
 services:
   acode:
-    # Nothing here by default: the stack runs the published image, which carries
-    # no project toolchain, and builds nothing. A toolchain is opt-in and yours
-    # to write -- Go, Rust, or anything else -- so a workspace that has to
-    # compile points build.dockerfile at your own file and gives the result its
-    # own tag. The launchers build only when this file adds a `build:`; the full
-    # snippet is docs/container.md section 6.
+    # The stack builds compose/Dockerfile: a Go toolchain, the released binary,
+    # and gh. A workspace in another language copies that file, changes the
+    # base, and points this at the copy. The tracked image: has to be replaced
+    # too, or the build lands on the stack's own tag.
     #
     # build:
     #   context: ${ACODE_STACK_DIR:-.}
-    #   dockerfile: Dockerfile.mine
-    # image: localhost/acode-stack:mine
+    #   dockerfile: Dockerfile.toolchain
+    # image: localhost/acode-stack:toolchain
     #
-    # Dockerfile.gh is the one image this repository ships, for the opt-in gh
-    # login of section 5. It adds a CLI, not a compiler:
-    #
-    # build:
-    #   context: ${ACODE_STACK_DIR:-.}
-    #   dockerfile: Dockerfile.gh
-    # image: localhost/acode-stack:gh
-    #
-    # An explicit empty list, not a bare `volumes:`: YAML reads that as null,
-    # and podman-compose then iterates `for v in None`.
+    # An explicit empty list, not a bare `volumes:`, which YAML reads as null:
+    # podman-compose's container_to_args iterates `cnt.get("volumes", [])`, and
+    # `for v in None` is a TypeError.
     volumes: []
-      # Every mount below is opt-in: a credential the agent does not need only
-      # gives an injected instruction something to use. Keep to plain binds;
-      # Compose `secrets:` is implemented differently by the two engines.
-
-      # Commit identity, on an address the bot account owns. Read-only, so
-      # `git config --global` fails inside. Without it, `git commit` fails with
-      # "Committer identity unknown".
-      # - type: bind
-      #   source: ${HOME:?HOME is not set}/.config/acode/gitconfig
-      #   target: /home/acode/.gitconfig
-      #   read_only: true
-      #   bind:
-      #     selinux: Z
-
-      # GitHub login for the bot account, which needs the gh image above.
-      # - type: bind
-      #   source: ${HOME:?HOME is not set}/.config/acode/gh
-      #   target: /home/acode/.config/gh
-      #   read_only: true
-      #   bind:
-      #     selinux: Z
-
-      # One directory bind, so known_hosts sits beside the key at the path ssh
-      # reads by default. Read-only: a writable copy could be re-pinned.
-      # - type: bind
-      #   source: ${HOME:?HOME is not set}/.config/acode/.ssh
-      #   target: /home/acode/.ssh
-      #   read_only: true
-      #   bind:
-      #     selinux: Z

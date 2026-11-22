@@ -8,12 +8,11 @@
 #   ~/acode/scripts/acode-docker -model <id> -task "..."  # arguments go to acode
 #   ACODE_TTY=0 ~/acode/scripts/acode-docker < task.txt   # no TTY, for piped input
 #
-# ACODE_WORKSPACE pins a project other than $PWD. The stack runs the published
-# image and builds nothing; a compose.local.yaml that adds `build:` with your own
-# Dockerfile adds a toolchain, and ACODE_BUILD=1 then forces that rebuild.
-# A compose.local.yaml in the stack checkout is passed last, so a machine-local
-# override -- a credential bind, a toolchain image, another ACODE_IMAGE -- wins
-# and stays out of git; docs/container.md sections 5 and 6.
+# ACODE_WORKSPACE pins a project other than $PWD. ACODE_BUILD=1 forces a rebuild;
+# otherwise a missing stack image is built. The stack image carries the Go
+# toolchain and gh, and a compose.local.yaml replaces it for another language.
+# That override is passed last, so a machine-local credential or image wins and
+# stays out of git; docs/container.md sections 5 and 6.
 set -eu
 
 STACK_DIR="${ACODE_STACK_DIR:-$(cd -- "$(dirname -- "$0")/.." && pwd -P)}"
@@ -76,28 +75,32 @@ IMAGE="$(printf '%s\n' "$ACODE_BLOCK" |
   tr -d "\"'")"
 BUILD="$(printf '%s\n' "$ACODE_BLOCK" | awk '/^    build:/{ print "yes"; exit }')"
 
-# A bind whose source is a missing *file* is created as a directory, because the
-# Compose spec's create_host_path defaults to true and podman-compose's
-# assert_volume calls os.makedirs for the same case. A directory mounted at
-# /home/acode/.gitconfig makes every git call inside the container fail with
-# "unable to access '/home/acode/.gitconfig': Is a directory" -- the agent looks
-# broken rather than merely unconfigured. Seeding an empty file keeps git working
-# and leaves user.name unset, so `git commit` is the only thing that fails, which
-# is what the documentation describes. The parent directories are made as the
-# invoking user, not the engine, which would create them root-owned and leave a
-# later real login unable to write them.
-GITCONFIG="$HOME/.config/acode/gitconfig"
-case "$CONFIG" in
-  *"$GITCONFIG"*)
-    if [ ! -e "$GITCONFIG" ]; then
-      mkdir -p "${GITCONFIG%/*}"
-      chmod 0700 "${GITCONFIG%/*}"
-      : > "$GITCONFIG"
-      chmod 0644 "$GITCONFIG"
-      echo "acode-docker: seeded an empty $GITCONFIG; add a [user] section for the agent's commits" >&2
-    fi
-    ;;
-esac
+# The stack mounts gh, gitconfig, and .ssh always, and a machine with none of
+# them has to still run. The engine creates a missing bind source itself, but as
+# root under Docker, and as a directory even where the config mounts a file -- and
+# a directory at ~/.gitconfig makes every git call fail with "Is a directory".
+# Create the three paths first, as the invoking user and with the right type, so
+# an absent credential is simply absent: gh reports no login, ssh finds no key,
+# and git works. Only paths the merged config actually mounts are touched.
+seed_credential() { # $1 = path under ~/.config/acode, $2 = dir|file
+  seed_path="$HOME/.config/acode/$1"
+  [ -e "$seed_path" ] && return 0
+  mkdir -p "$HOME/.config/acode"
+  chmod 0700 "$HOME/.config/acode"
+  if [ "$2" = dir ]; then
+    mkdir -p "$seed_path"
+    chmod 0700 "$seed_path"
+  else
+    : > "$seed_path"
+    chmod 0644 "$seed_path"
+  fi
+  echo "acode-docker: created an empty $seed_path" >&2
+}
+for seed in "gh dir" "gitconfig file" ".ssh dir"; do
+  case "$CONFIG" in
+    *"/.config/acode/${seed% *}"*) seed_credential "${seed% *}" "${seed##* }" ;;
+  esac
+done
 
 # 32 random bits keep concurrent instances apart, and the name is what a later
 # `docker logs`, `docker stop`, or `docker exec` needs to address one of them.
