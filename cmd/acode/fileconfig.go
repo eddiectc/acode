@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/eddiectc/acode/internal/tui"
 	"github.com/eddiectc/aharness/agent"
 	"github.com/eddiectc/aharness/tools"
 )
@@ -55,6 +56,7 @@ type fileConfig struct {
 	LogRequests      *bool                        `json:"log_requests,omitzero"`
 	UIRich           *bool                        `json:"ui_rich,omitzero"`
 	UIExpandAll      *bool                        `json:"ui_expand_all,omitzero"`
+	UITheme          *string                      `json:"ui_theme,omitzero"`
 	AgentOverrides   map[string]fileAgentOverride `json:"agent_overrides,omitzero"`
 }
 
@@ -189,6 +191,11 @@ func (c fileConfig) validate(path string) error {
 	// an explicit empty value too.
 	if c.ThinkingEffort != nil && *c.ThinkingEffort == "" {
 		return fail("thinking_effort must not be empty; omit the key or use \"default\"")
+	}
+	if c.UITheme != nil {
+		if _, err := tui.ParseTheme(*c.UITheme); err != nil {
+			return fail("ui_theme: %v", err)
+		}
 	}
 	// Overrides are validated without the discovered catalog: the name shape,
 	// the two free-form routing values, and the turn cap are fixed rules. The

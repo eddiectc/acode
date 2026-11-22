@@ -77,6 +77,8 @@ func configSettingDefs() []configSettingDef {
 			options: []tui.SettingOption{{Value: "true", Label: "rich"}, {Value: "false", Label: "raw"}}},
 		{key: "ui_expand_all", label: "block folding", kind: tui.SettingToggle, live: true,
 			options: []tui.SettingOption{{Value: "true", Label: "expanded"}, {Value: "false", Label: "folded"}}},
+		{key: "ui_theme", label: "theme", kind: tui.SettingEnum, live: true,
+			options: tui.ThemeSettingOptions()},
 		{key: "agent_overrides", label: "agent overrides", kind: tui.SettingInfo,
 			hint: "edited in /agents"},
 	}
@@ -227,6 +229,14 @@ func fileSettingRaw(file fileConfig, key string) (raw string, set bool) {
 		return configBoolRaw(file.UIRich)
 	case "ui_expand_all":
 		return configBoolRaw(file.UIExpandAll)
+	case "ui_theme":
+		raw, set := derefString(file.UITheme)
+		if set {
+			if theme, err := tui.ParseTheme(raw); err == nil {
+				raw = string(theme)
+			}
+		}
+		return raw, set
 	case "agent_overrides":
 		if len(file.AgentOverrides) == 0 {
 			return "0", false
@@ -286,6 +296,8 @@ func defaultSettingRaw(key string) string {
 		return "true"
 	case "ui_expand_all", "require_usage", "log_requests":
 		return "false"
+	case "ui_theme":
+		return string(tui.ThemeDefault)
 	case "session_timeout", "model_timeout":
 		return "0s"
 	case "max_turns", "max_total_tokens", "max_context_tokens", "max_output_tokens", "agent_overrides":
@@ -350,6 +362,11 @@ func effectiveSettingRaw(cfg config, key string) string {
 		return strconv.FormatBool(cfg.UIRich)
 	case "ui_expand_all":
 		return strconv.FormatBool(cfg.UIExpandAll)
+	case "ui_theme":
+		if cfg.UITheme == "" {
+			return string(tui.ThemeDefault)
+		}
+		return cfg.UITheme
 	case "agent_overrides":
 		return strconv.Itoa(len(cfg.AgentOverrides))
 	default:

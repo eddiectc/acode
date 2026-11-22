@@ -485,7 +485,7 @@ func TestThinkingIsSanitizedAndCapped(t *testing.T) {
 	if strings.ContainsRune(item.text, '\x1b') || strings.ContainsRune(item.text, '\x07') {
 		t.Fatalf("thinking text was not sanitized: %q", item.text)
 	}
-	thinkingLines := app.renderThinking(newTheme(true), item)
+	thinkingLines := app.renderThinking(uiThemeFor(true, ThemeDefault), item)
 	plain := ansi.Strip(strings.Join(thinkingLines, "\n"))
 	if strings.ContainsRune(plain, '\x1b') {
 		t.Fatalf("rendered thinking line contains a raw ESC: %q", plain)
@@ -523,7 +523,7 @@ func itemKinds(items []*transcriptItem) []itemKind {
 
 func TestRunLineRendersLegacyLimitStatuses(t *testing.T) {
 	app := newTestApp(t, newManualHost())
-	theme := newTheme(true)
+	theme := uiThemeFor(true, ThemeDefault)
 	for _, status := range []agent.StopReason{agent.StopMaxTurns, agent.StopTimeLimit} {
 		line := app.renderRunLine(theme, &transcriptItem{
 			run:    1,
@@ -555,7 +555,7 @@ func TestToolIntentTitlesTheLiveBlock(t *testing.T) {
 	if item.intent != "Fix the parser" {
 		t.Fatalf("tool intent = %q", item.intent)
 	}
-	header := plainRows(app.renderTool(newTheme(true), item))[0]
+	header := plainRows(app.renderTool(uiThemeFor(true, ThemeDefault), item))[0]
 	if !strings.Contains(header, "Fix the parser") {
 		t.Fatalf("tool header lacks the intent: %q", header)
 	}

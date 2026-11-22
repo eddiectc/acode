@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/eddiectc/aharness/agent"
 	"github.com/eddiectc/aharness/model"
@@ -229,6 +230,7 @@ type App struct {
 
 	colorProfile  string
 	noColor       bool
+	theme         ThemeName
 	imageProtocol string
 
 	startedAt time.Time
@@ -270,6 +272,7 @@ func New(opts Options) *App {
 		models:        opts.Models,
 		colorProfile:  opts.ColorProfile,
 		noColor:       opts.NoColor,
+		theme:         normalizeTheme(opts.Theme),
 		imageProtocol: opts.ImageProtocol,
 		imageCache:    make(map[string]*imageBlock),
 		seed:          opts.Seed,
@@ -308,7 +311,7 @@ func New(opts Options) *App {
 			app.applySettings(provider.Settings())
 		}
 	}
-	app.applyNoColor()
+	app.applyTheme()
 	return app
 }
 
@@ -642,14 +645,63 @@ func (m *App) clearComposer() {
 	m.updateSuggestions()
 }
 
-func (m *App) applyNoColor() {
-	if !m.noColor {
+// normalizeTheme resolves one theme name, falling back to the built-in default
+// for an empty or unknown value.
+func normalizeTheme(name ThemeName) ThemeName {
+	parsed, err := ParseTheme(string(name))
+	if err != nil {
+		return ThemeDefault
+	}
+	return parsed
+}
+
+// applyTheme installs the composer styles for the active palette. A theme that
+// paints the frame also owns unset foregrounds, so the composer text and prompt
+// cannot rely on the terminal's own colors.
+func (m *App) applyTheme() {
+	t := m.uiTheme()
+	if m.noColor {
+		styles := textarea.DefaultStyles(true)
+		styles.Focused.Text = styles.Focused.Text.Underline(false)
+		styles.Blurred.Text = styles.Blurred.Text.Underline(false)
+		m.composer.SetStyles(styles)
 		return
 	}
-	styles := textarea.DefaultStyles(true)
-	styles.Focused.Text = styles.Focused.Text.Underline(false)
-	styles.Blurred.Text = styles.Blurred.Text.Underline(false)
+	if !t.paintsFrame() {
+		m.composer.SetStyles(textarea.DefaultDarkStyles())
+		return
+	}
+	styles := textarea.DefaultStyles(!t.light)
+	text := lipgloss.NewStyle().Foreground(t.textColor)
+	dim := lipgloss.NewStyle().Foreground(t.mutedColor)
+	styles.Focused.Text = text
+	styles.Blurred.Text = dim
+	styles.Focused.Prompt = lipgloss.NewStyle().Bold(true).Foreground(t.accentColor)
+	styles.Blurred.Prompt = dim
+	styles.Focused.Placeholder = dim
+	styles.Blurred.Placeholder = dim
+	styles.Cursor.Color = t.accentColor
+	styles.Focused.CursorLine = lipgloss.NewStyle().Background(t.cursorColor)
+	styles.Blurred.CursorLine = lipgloss.NewStyle()
+	styles.Focused.Selection = lipgloss.NewStyle().Background(t.selectionColor)
+	styles.Blurred.Selection = styles.Focused.Selection
 	m.composer.SetStyles(styles)
+}
+
+// setTheme switches the process palette and re-renders everything the theme
+// affects. A saved ui_theme applies this way immediately; the session log and
+// the active run are untouched.
+func (m *App) setTheme(name ThemeName) {
+	name = normalizeTheme(name)
+	if name == m.effectiveTheme() {
+		return
+	}
+	m.theme = name
+	m.applyTheme()
+	m.invalidateRenders()
+	m.refreshThemedOverlays()
+	m.rebuildChildFocus()
+	m.ensureContent()
 }
 
 // currentState reports the state label shown in the status bar and protocol.

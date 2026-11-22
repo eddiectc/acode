@@ -34,6 +34,7 @@ func settingsHost(t *testing.T, path, stateDir string) *tuiHost {
 		WebTimeout:       tools.WebTimeoutDefault,
 		WebFetchProvider: tools.WebFetchProviderBuiltin,
 		UIRich:           true,
+		UITheme:          string(tui.ThemeDefault),
 		SettingSources:   map[string]string{},
 	}
 	if err := validateEffective(&cfg); err != nil {
@@ -109,11 +110,14 @@ func TestParseConfigSettingSources(t *testing.T) {
 	if got := cfg.SettingSources["ui_rich"]; got != "default" {
 		t.Errorf("ui_rich source = %q, want default", got)
 	}
+	if got := cfg.SettingSources["ui_theme"]; got != "default" {
+		t.Errorf("ui_theme source = %q, want default", got)
+	}
 	if got := cfg.SettingSources["max_turns"]; got != "default" {
 		t.Errorf("max_turns source = %q, want default", got)
 	}
 
-	path := writeConfigFile(t, `{"max_turns": 4, "searxng_url": "http://127.0.0.1:8080", "ui_rich": false}`)
+	path := writeConfigFile(t, `{"max_turns": 4, "searxng_url": "http://127.0.0.1:8080", "ui_rich": false, "ui_theme": "solarized-light"}`)
 	cfg = cfgTestParseOK(t, append(append([]string{}, base...), "-config", path, "-max-turns", "9"),
 		map[string]string{"ACODE_MAX_TOTAL_TOKENS": "7000"})
 	cases := map[string]string{
@@ -121,6 +125,7 @@ func TestParseConfigSettingSources(t *testing.T) {
 		"max_total_tokens": "environment ACODE_MAX_TOTAL_TOKENS",
 		"searxng_url":      "config file",
 		"ui_rich":          "config file",
+		"ui_theme":         "config file",
 		"provider":         "default",
 		"agent_overrides":  "default",
 	}
@@ -210,6 +215,7 @@ func TestTUIHostSetsEveryConfigSetting(t *testing.T) {
 		"log_requests":       "true",
 		"ui_rich":            "false",
 		"ui_expand_all":      "true",
+		"ui_theme":           "solarized-light",
 	}
 	for _, def := range configSettingDefs() {
 		if def.kind == tui.SettingInfo {
@@ -256,6 +262,7 @@ func TestTUIHostSetsEveryConfigSetting(t *testing.T) {
 		{"log_requests", boolDeref(loaded.LogRequests), true},
 		{"ui_rich", boolDeref(loaded.UIRich), false},
 		{"ui_expand_all", boolDeref(loaded.UIExpandAll), true},
+		{"ui_theme", strDeref(loaded.UITheme), "solarized-light"},
 	}
 	for _, check := range checks {
 		if check.got != check.want {
@@ -264,6 +271,9 @@ func TestTUIHostSetsEveryConfigSetting(t *testing.T) {
 	}
 	if host.cfg.UIRich || !host.cfg.UIExpandAll {
 		t.Fatalf("live display settings = %+v", host.cfg)
+	}
+	if host.cfg.UITheme != "solarized-light" {
+		t.Fatalf("live theme = %q, want solarized-light", host.cfg.UITheme)
 	}
 	view := host.Settings()
 	if rendered := fmt.Sprintf("%+v", view); strings.Contains(rendered, "test-secret-token") {
@@ -312,6 +322,9 @@ func TestTUIHostSetsEveryConfigSetting(t *testing.T) {
 	}
 	if !host.cfg.UIRich || host.cfg.UIExpandAll {
 		t.Fatalf("live display settings after reset = %+v", host.cfg)
+	}
+	if host.cfg.UITheme != string(tui.ThemeDefault) {
+		t.Fatalf("live theme after reset = %q, want %q", host.cfg.UITheme, tui.ThemeDefault)
 	}
 }
 
@@ -365,6 +378,7 @@ func TestTUIHostSettingValidation(t *testing.T) {
 		{"zero HTTP timeout", "http_timeout", "0s", "http_timeout"},
 		{"negative session timeout", "session_timeout", "-1s", "session_timeout"},
 		{"bad bool", "require_usage", "maybe", "true or false"},
+		{"unknown theme", "ui_theme", "dracula", "unknown theme"},
 		{"agent overrides", "agent_overrides", "x", "/agents"},
 		{"unknown key", "unknown_key", "x", "unknown config setting"},
 	}

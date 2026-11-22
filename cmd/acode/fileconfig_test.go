@@ -53,7 +53,8 @@ func TestConfigPrecedenceFlagEnvFileDefault(t *testing.T) {
 		"http_timeout": "30s",
 		"catalog_timeout": "5s",
 		"require_usage": true,
-		"log_requests": true
+		"log_requests": true,
+		"ui_theme": "Solarized-Light"
 	}`)
 	env := map[string]string{
 		"ACODE_MODEL":             "env-model",
@@ -88,6 +89,7 @@ func TestConfigPrecedenceFlagEnvFileDefault(t *testing.T) {
 		{"http timeout from file", cfg.HTTPTimeout, 30 * time.Second},
 		{"catalog timeout from file", cfg.CatalogTimeout, 5 * time.Second},
 		{"log requests from file", cfg.LogRequests, true},
+		{"theme from file", cfg.UITheme, "solarized-light"},
 		{"base URL from env", cfg.BaseURL, "http://env.example/v1"},
 	}
 	for _, tc := range cases {
@@ -274,6 +276,7 @@ func TestConfigFileErrors(t *testing.T) {
 			{"empty thinking effort", `{"thinking_effort": ""}`, "thinking_effort"},
 			{"zero http timeout", `{"http_timeout": "0s"}`, "http_timeout"},
 			{"zero catalog timeout", `{"catalog_timeout": "0s"}`, "catalog_timeout"},
+			{"unknown theme", `{"ui_theme": "dracula"}`, "ui_theme"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				path := writeConfigFile(t, tc.body)
@@ -575,6 +578,7 @@ func TestWriteFileConfigRoundTrip(t *testing.T) {
 		LogRequests:      fileBool(false),
 		UIRich:           fileBool(true),
 		UIExpandAll:      fileBool(false),
+		UITheme:          fileStr("solarized-dark"),
 		AgentOverrides: map[string]fileAgentOverride{
 			"reviewer": {
 				Model:          fileStr("review-model"),

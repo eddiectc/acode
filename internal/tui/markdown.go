@@ -24,8 +24,9 @@ type tableData struct {
 
 // renderMarkdown renders assistant markdown source. Raw mode returns sanitized
 // text without parsing. Over-deep or oversized input falls back to plain text
-// with a visible reason.
-func renderMarkdown(source string, width int, rich, noColor bool) (string, *tableData, error) {
+// with a visible reason. A light theme uses Glamour's light palette so the
+// markdown colors stay legible on the painted light background.
+func renderMarkdown(source string, width int, rich, noColor, light bool) (string, *tableData, error) {
 	source = Sanitize(source)
 	table := parseLastTable(source)
 	if !rich {
@@ -41,6 +42,9 @@ func renderMarkdown(source string, width int, rich, noColor bool) (string, *tabl
 		return source + "\n[markdown not rendered: too many blocks]", table, nil
 	}
 	style := "dark"
+	if light {
+		style = "light"
+	}
 	if noColor {
 		style = "notty"
 	}

@@ -1082,6 +1082,7 @@ func executeTUI(cfg config, stdin io.Reader, stdout, stderr io.Writer) int {
 			Stdout:        stdout,
 			ColorProfile:  colorProfile,
 			NoColor:       noColor,
+			Theme:         tui.ThemeName(cfg.UITheme),
 			ImageProtocol: imageProtocol,
 			Terminal:      terminal,
 		})
@@ -1096,6 +1097,7 @@ func executeTUI(cfg config, stdin io.Reader, stdout, stderr io.Writer) int {
 			Stdout:        stdout,
 			ColorProfile:  colorProfile,
 			NoColor:       noColor,
+			Theme:         tui.ThemeName(cfg.UITheme),
 			ImageProtocol: imageProtocol,
 			Terminal:      terminal,
 		})

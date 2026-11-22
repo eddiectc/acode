@@ -107,7 +107,7 @@ func TestWorkspaceListSkipsGitAndSymlinks(t *testing.T) {
 
 func TestMarkdownRenderingAndFallbacks(t *testing.T) {
 	source := "# Heading\n\n**bold** and *em* and `code`\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n[link](https://example.com)\n"
-	rendered, table, err := renderMarkdown(source, 50, true, false)
+	rendered, table, err := renderMarkdown(source, 50, true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestMarkdownRenderingAndFallbacks(t *testing.T) {
 	if table == nil || len(table.headers) != 2 || len(table.rows) != 1 {
 		t.Fatalf("table = %+v", table)
 	}
-	raw, _, err := renderMarkdown(source, 50, false, false)
+	raw, _, err := renderMarkdown(source, 50, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestMarkdownRenderingAndFallbacks(t *testing.T) {
 	}
 
 	deep := strings.Repeat("> ", 20) + "deep"
-	plain, _, err := renderMarkdown(deep, 40, true, false)
+	plain, _, err := renderMarkdown(deep, 40, true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestMarkdownRenderingAndFallbacks(t *testing.T) {
 	}
 
 	html := "<script>alert(1)</script>\n\nhello"
-	out, _, err := renderMarkdown(html, 40, true, false)
+	out, _, err := renderMarkdown(html, 40, true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestMarkdownRenderingAndFallbacks(t *testing.T) {
 }
 
 func TestMarkdownImageSyntaxIsLeftToImageBlocks(t *testing.T) {
-	rendered, _, err := renderMarkdown("before ![chart](chart.png) after", 60, true, false)
+	rendered, _, err := renderMarkdown("before ![chart](chart.png) after", 60, true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func FuzzRenderMarkdown(f *testing.F) {
 		if len(source) > 128<<10 {
 			return
 		}
-		out, table, err := renderMarkdown(source, 40, true, false)
+		out, table, err := renderMarkdown(source, 40, true, false, false)
 		if err != nil {
 			return
 		}

@@ -37,13 +37,18 @@ func TestBinaryUIJSONSettingsWritesConfig(t *testing.T) {
 
 	// The display rows are last (before agent overrides): nav from the bottom.
 	h.send(`{"v":1,"type":"key","key":"end"}`)
+	h.send(`{"v":1,"type":"key","key":"up"}`) // ui_theme
+	h.send(`{"v":1,"type":"key","key":"enter"}`)
+	h.waitFor("saved theme")
+	if !strings.Contains(h.output(), `"bg":"#002b36"`) {
+		t.Fatal("solarized dark theme did not paint the frame background")
+	}
 	h.send(`{"v":1,"type":"key","key":"up"}`) // ui_expand_all
+	h.send(`{"v":1,"type":"key","key":"enter"}`)
+	h.waitFor("saved block folding")
 	h.send(`{"v":1,"type":"key","key":"up"}`) // ui_rich
 	h.send(`{"v":1,"type":"key","key":"enter"}`)
 	h.waitFor("saved assistant rendering")
-	h.send(`{"v":1,"type":"key","key":"down"}`)
-	h.send(`{"v":1,"type":"key","key":"enter"}`)
-	h.waitFor("saved block folding")
 
 	// max_turns is the seventh row: home, then six downs.
 	h.send(`{"v":1,"type":"key","key":"home"}`)
@@ -67,6 +72,9 @@ func TestBinaryUIJSONSettingsWritesConfig(t *testing.T) {
 	}
 	if loaded.UIExpandAll == nil || !*loaded.UIExpandAll {
 		t.Fatalf("ui_expand_all = %+v, want true", loaded.UIExpandAll)
+	}
+	if loaded.UITheme == nil || *loaded.UITheme != "solarized-dark" {
+		t.Fatalf("ui_theme = %+v, want solarized-dark", loaded.UITheme)
 	}
 	if loaded.MaxTurns == nil || *loaded.MaxTurns != 5 {
 		t.Fatalf("max_turns = %+v, want 5", loaded.MaxTurns)

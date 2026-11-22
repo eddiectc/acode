@@ -89,7 +89,7 @@ func (f *childFocus) ackPending(id uint64) {
 }
 
 // rebuild renders the child history into the focus viewport.
-func (f *childFocus) rebuild(t uiTheme, width int, rich, noColor bool) {
+func (f *childFocus) rebuild(t uiTheme, width int, rich bool) {
 	if width <= 0 {
 		return
 	}
@@ -98,7 +98,7 @@ func (f *childFocus) rebuild(t uiTheme, width int, rich, noColor bool) {
 	if f.err != "" {
 		lines = append(lines, t.errorSty.Render("error: "+SanitizeLine(f.err)))
 	}
-	lines = append(lines, renderChildHistory(t, f.items, f.pending, width, rich, noColor)...)
+	lines = append(lines, renderChildHistory(t, f.items, f.pending, width, rich)...)
 	f.view.SetLines(wrapLines(lines, width))
 	if f.follow {
 		f.view.GotoBottom()
@@ -108,7 +108,7 @@ func (f *childFocus) rebuild(t uiTheme, width int, rich, noColor bool) {
 // renderChildHistory renders one delegated child's display history. Assistant
 // text is markdown source and follows the parent transcript's rich/raw mode;
 // tool bodies are capped because the focused view is not the log.
-func renderChildHistory(t uiTheme, items []agent.HistoryItem, pending []pendingSteer, width int, rich, noColor bool) []string {
+func renderChildHistory(t uiTheme, items []agent.HistoryItem, pending []pendingSteer, width int, rich bool) []string {
 	var lines []string
 	for _, item := range items {
 		switch item.Kind {
@@ -121,7 +121,7 @@ func renderChildHistory(t uiTheme, items []agent.HistoryItem, pending []pendingS
 			}
 			lines = append(lines, renderTextBlock(t, label, t.user, item.Text, width)...)
 		case agent.HistoryAssistant:
-			lines = append(lines, renderChildAssistant(t, item.Text, width, rich, noColor)...)
+			lines = append(lines, renderChildAssistant(t, item.Text, width, rich)...)
 		case agent.HistoryTool:
 			lines = append(lines, renderChildTool(t, item, width)...)
 		case agent.HistoryNotice:
@@ -166,14 +166,14 @@ func renderChildRun(t uiTheme, item agent.HistoryItem, width int) string {
 	return t.dim.Render(ansi.Truncate(strings.Join(parts, " · ")+" ──", width, ""))
 }
 
-func renderChildAssistant(t uiTheme, text string, width int, rich, noColor bool) []string {
+func renderChildAssistant(t uiTheme, text string, width int, rich bool) []string {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
 	label := t.label.Render("assistant ")
 	indent := strings.Repeat(" ", max(0, ansi.StringWidth(label)))
 	bodyWidth := max(10, width-ansi.StringWidth(label))
-	rendered, _, err := renderMarkdown(text, bodyWidth, rich, noColor)
+	rendered, _, err := renderMarkdown(text, bodyWidth, rich, t.plain, t.light)
 	if err != nil {
 		rendered = Sanitize(text) + "\n[markdown fallback: " + SanitizeLine(err.Error()) + "]"
 	}
@@ -307,7 +307,7 @@ func (m *App) rebuildChildFocus() {
 	if f == nil {
 		return
 	}
-	f.rebuild(newTheme(m.noColor), m.width, m.rich, m.noColor)
+	f.rebuild(m.uiTheme(), m.width, m.rich)
 }
 
 // clearChildFocus returns the main transcript to the parent.

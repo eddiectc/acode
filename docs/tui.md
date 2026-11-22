@@ -2,10 +2,10 @@
 
 - **Date:** 2026-11-15
 - **Status:** implemented, covering the catalog-backed model picker, thinking
-  effort controls, transcript folding, the persistent todo widget, and the
-  delegated-child roster and focus view. This document records the shipped
-  surface; caps live in [limits.md](limits.md) and commands in
-  [commands.md](commands.md).
+  effort controls, transcript folding, the persistent todo widget, the
+  selectable built-in and Solarized palettes, and the delegated-child roster
+  and focus view. This document records the shipped surface; caps live in
+  [limits.md](limits.md) and commands in [commands.md](commands.md).
 - **Verified:** fake-provider TUI/`-ui-json` integration (streaming, tools,
   steering, interrupts, resume, fork, signals, `F3` folding, and the todo
   widget's render/restore path), headless `x/vt` frames and SVG snapshots, race
@@ -132,12 +132,12 @@ overlay (`F1`) lists every command.
 `/settings` opens a browser for every key in the active config file. It lists
 the model, provider, workspace, provider and catalog URLs, thinking effort, run
 budgets, timeouts, usage/logging switches, SearXNG and `web_fetch` settings,
-`ui_rich`, `ui_expand_all`, and an `agent_overrides` row that opens `/agents`.
-The value column shows the saved value, or the current effective value when the
-file omits the key; the source column reports `file`, `flag`, `env`, or
-`current` (`runtime` for a display toggle changed since startup), and the footer
-explains the selected row and warns when a flag or environment variable
-overrides a saved value.
+`ui_rich`, `ui_expand_all`, `ui_theme`, and an `agent_overrides` row that opens
+`/agents`. The value column shows the saved value, or the current effective
+value when the file omits the key; the source column reports `file`, `flag`,
+`env`, or `current` (`runtime` when a live display value no longer matches the
+file), and the footer explains the selected row and warns when a flag or
+environment variable overrides a saved value.
 
 `Up`/`Down`/`PgUp`/`PgDn`/`Home`/`End` and the wheel move the selection.
 `Enter`/`Space` opens an inline editor for text, integer, duration, and secret
@@ -149,20 +149,37 @@ built-in default applies, and is a no-op when the row has no saved value.
 Validation uses the startup rules: model IDs against the loaded catalog when
 available, provider names, workspace existence, base and catalog URLs, SearXNG
 and `web_fetch` URLs, duration bounds, non-negative budgets, a positive context
-window, and thinking effort against the effective model. The candidate file's
-own values are validated before the atomic 0600 replacement, every other key is
-preserved, a path inside the workspace is refused, and `-config ""` disables
-saving. The `web_fetch_key` value is never rendered or prefilled; the row says
+window, thinking effort against the effective model, and theme names. The
+candidate file's own values are validated before the atomic 0600 replacement,
+every other key is preserved, a path inside the workspace is refused, and
+`-config ""` disables saving. The `web_fetch_key` value is never rendered or prefilled; the row says
 `set` or `(unset)`, the editor buffer is masked, and the overlay warns when the
 `web_fetch_provider`/`web_fetch_url` pair is incomplete.
 
-A saved value is read at the next startup. `ui_rich` and `ui_expand_all` also
-apply to the current process immediately; a value changed with `Ctrl-R` or `F3`
-since startup is labelled `runtime`. The overlay works while idle or running
-because it never changes the active run or the session log, and it emits no
-protocol event (the `-ui-json` overlay value is `settings`, and `r` may arrive
-as a one-character text message). See
+A saved value is read at the next startup. `ui_rich`, `ui_expand_all`, and
+`ui_theme` also apply to the current process immediately; a value changed with
+`Ctrl-R` or `F3` since startup is labelled `runtime`, and so is a theme that no
+longer matches the file. The overlay works while idle or running because it
+never changes the active run or the session log, and it emits no protocol event
+(the `-ui-json` overlay value is `settings`, and `r` may arrive as a
+one-character text message). See
 [commands.md § `/settings`](commands.md#settings).
+
+## Themes
+
+Three palettes ship: `acode` (the built-in dark palette), `solarized-dark`, and
+`solarized-light`. `ui_theme` selects one at startup, and `/settings` applies a
+saved choice to the current process immediately. No session event or protocol
+field records the theme, and `-ui-json` frames and snapshots carry it only as
+ordinary style spans.
+
+The built-in `acode` palette leaves the terminal's own background alone. The
+Solarized palettes paint the whole frame, including the transcript, composer,
+overlays, and picker chrome, so `solarized-light` is legible on a dark terminal
+and `solarized-dark` is legible on a light one. Markdown rendering follows the
+palette's light/dark mode, and `NO_COLOR` keeps its usual meaning: attributes
+survive and color and background are stripped. `Ctrl-X` details names the
+active theme.
 
 ## Session picker
 

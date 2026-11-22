@@ -28,57 +28,6 @@ const (
 	minEmptyTipRows = 2
 )
 
-type uiTheme struct {
-	plain bool
-
-	title    lipgloss.Style
-	label    lipgloss.Style
-	user     lipgloss.Style
-	assist   lipgloss.Style
-	think    lipgloss.Style
-	tool     lipgloss.Style
-	dim      lipgloss.Style
-	notice   lipgloss.Style
-	errorSty lipgloss.Style
-	status   lipgloss.Style
-	header   lipgloss.Style
-	box      lipgloss.Style
-}
-
-func newTheme(noColor bool) uiTheme {
-	if noColor {
-		return uiTheme{
-			plain:  true,
-			title:  lipgloss.NewStyle().Bold(true),
-			label:  lipgloss.NewStyle().Bold(true),
-			think:  lipgloss.NewStyle().Italic(true),
-			status: lipgloss.NewStyle(),
-			header: lipgloss.NewStyle(),
-			box:    lipgloss.NewStyle(),
-		}
-	}
-	accent := lipgloss.Color("#89b4fa")
-	green := lipgloss.Color("#a6e3a1")
-	red := lipgloss.Color("#f38ba8")
-	yellow := lipgloss.Color("#f9e2af")
-	muted := lipgloss.Color("#6c7086")
-	text := lipgloss.Color("#cdd6f4")
-	return uiTheme{
-		title:    lipgloss.NewStyle().Bold(true).Foreground(accent),
-		label:    lipgloss.NewStyle().Bold(true).Foreground(accent),
-		user:     lipgloss.NewStyle().Bold(true).Foreground(green),
-		assist:   lipgloss.NewStyle().Foreground(text),
-		think:    lipgloss.NewStyle().Foreground(muted).Italic(true),
-		tool:     lipgloss.NewStyle().Foreground(yellow),
-		dim:      lipgloss.NewStyle().Foreground(muted),
-		notice:   lipgloss.NewStyle().Foreground(yellow),
-		errorSty: lipgloss.NewStyle().Foreground(red),
-		status:   lipgloss.NewStyle().Foreground(muted),
-		header:   lipgloss.NewStyle().Foreground(text),
-		box:      lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(0, 1),
-	}
-}
-
 // View implements tea.Model.
 func (m *App) View() tea.View {
 	view := tea.NewView("")
@@ -92,7 +41,7 @@ func (m *App) View() tea.View {
 	}
 	if m.width < minWidth || m.height < minHeight {
 		msg := fmt.Sprintf("terminal too small: %dx%d (minimum %dx%d)", m.width, m.height, minWidth, minHeight)
-		view.SetContent(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, msg))
+		view.SetContent(paintFrame(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, msg), m.width, m.uiTheme()))
 		return view
 	}
 	// A streaming delta marks the transcript dirty and schedules a coalesced
@@ -115,7 +64,7 @@ func (m *App) View() tea.View {
 			base = lipgloss.NewCompositor(baseLayer, overlayLayer).Render()
 		}
 	}
-	view.SetContent(fitLines(base, m.width, m.height))
+	view.SetContent(paintFrame(fitLines(base, m.width, m.height), m.width, m.uiTheme()))
 	view.Cursor = m.cursor()
 	return view
 }
@@ -141,7 +90,7 @@ func (m *App) baseFrame() string {
 }
 
 func (m *App) headerLine() string {
-	t := newTheme(m.noColor)
+	t := m.uiTheme()
 	modelName := SanitizeLine(m.currentModelID())
 	session := SanitizeLine(m.info.SessionID)
 	if len(session) > 8 {
@@ -169,7 +118,7 @@ func (m *App) headerLine() string {
 }
 
 func (m *App) statusLine() string {
-	t := newTheme(m.noColor)
+	t := m.uiTheme()
 	turns, contextTokens := m.info.Turns, m.info.ContextTokens
 	if m.run.active {
 		// A live run shows its own progress instead of the counters that are
@@ -245,7 +194,7 @@ func (m *App) suggestionView() string {
 		return ""
 	}
 	start := m.suggestionWindowStart(count)
-	t := newTheme(m.noColor)
+	t := m.uiTheme()
 	selected := lipgloss.NewStyle().Reverse(true)
 	lines := make([]string, count)
 	for i := range count {
@@ -384,7 +333,7 @@ func (m *App) transcriptLines() []string {
 }
 
 func (m *App) transcriptLinesInto(buf []string) []string {
-	t := newTheme(m.noColor)
+	t := m.uiTheme()
 	m.rowOf = m.rowOf[:0]
 	for _, it := range m.items {
 		m.rowOf = append(m.rowOf, len(buf))
@@ -526,7 +475,7 @@ func (m *App) renderAssistant(t uiTheme, it *transcriptItem) []string {
 	// word on a line of its own.
 	width := max(10, m.width-lipgloss.Width(label))
 	if !it.renderedSet || it.renderedWidth != width || it.renderedRich != m.rich {
-		rendered, _, err := renderMarkdown(it.text, width, m.rich, m.noColor)
+		rendered, _, err := renderMarkdown(it.text, width, m.rich, m.noColor, m.uiTheme().light)
 		if err != nil {
 			rendered = Sanitize(it.text) + "\n[markdown fallback: " + SanitizeLine(err.Error()) + "]"
 		}

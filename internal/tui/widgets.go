@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -285,7 +286,7 @@ func (o *overlayState) update(m *App, msg tea.KeyPressMsg) tea.Cmd {
 }
 
 func (o *overlayState) view(m *App) string {
-	t := newTheme(m.noColor)
+	t := m.uiTheme()
 	innerW, innerH := boxInner(m.width, m.height)
 	var title string
 	var content string
@@ -372,6 +373,86 @@ func wheelList(l *list.Model, up bool) {
 	}
 }
 
+// themeList applies the active palette to one picker list. Bubbles' defaults
+// hardcode dark colors, so a background-painting theme sets the delegate,
+// filter input, and title styles explicitly; the built-in theme keeps the
+// Bubbles defaults.
+func (m *App) themeList(l *list.Model) {
+	t := m.uiTheme()
+	delegate := list.NewDefaultDelegate()
+	input := textinput.DefaultDarkStyles()
+	listStyles := list.DefaultStyles(true)
+	if t.paintsFrame() {
+		text := lipgloss.NewStyle().Foreground(t.textColor)
+		dim := lipgloss.NewStyle().Foreground(t.mutedColor)
+		delegate.Styles.NormalTitle = delegate.Styles.NormalTitle.Foreground(t.textColor)
+		delegate.Styles.NormalDesc = delegate.Styles.NormalDesc.Foreground(t.mutedColor)
+		delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
+			BorderForeground(t.accentColor).Foreground(t.accentColor)
+		delegate.Styles.SelectedDesc = delegate.Styles.SelectedTitle
+		delegate.Styles.DimmedTitle = delegate.Styles.DimmedTitle.Foreground(t.mutedColor)
+		delegate.Styles.DimmedDesc = delegate.Styles.DimmedDesc.Foreground(t.mutedColor)
+		listStyles = list.DefaultStyles(!t.light)
+		listStyles.Title = listStyles.Title.Background(t.accentColor).Foreground(t.background)
+		listStyles.StatusBar = listStyles.StatusBar.Foreground(t.mutedColor)
+		listStyles.StatusBarActiveFilter = listStyles.StatusBarActiveFilter.Foreground(t.textColor)
+		listStyles.StatusBarFilterCount = listStyles.StatusBarFilterCount.Foreground(t.mutedColor)
+		listStyles.StatusEmpty = listStyles.StatusEmpty.Foreground(t.mutedColor)
+		listStyles.NoItems = listStyles.NoItems.Foreground(t.mutedColor)
+		listStyles.Spinner = listStyles.Spinner.Foreground(t.mutedColor)
+		input = textinput.DefaultStyles(!t.light)
+		input.Focused.Text = text
+		input.Blurred.Text = dim
+		input.Focused.Prompt = dim
+		input.Blurred.Prompt = dim
+		input.Cursor.Color = t.accentColor
+	}
+	l.Styles = listStyles
+	l.FilterInput.SetStyles(input)
+	l.SetDelegate(delegate)
+}
+
+// refreshThemedOverlays reapplies the active palette to overlays that captured
+// a style when they opened. The help and details bodies are pre-rendered, so
+// they are rebuilt; the pickers and table update their style sets in place.
+func (m *App) refreshThemedOverlays() {
+	t := m.uiTheme()
+	rebuild := func(kind OverlayKind, lines []string) []string {
+		switch kind {
+		case OverlayHelp:
+			return m.helpOverlayLines(t)
+		case OverlayDetails:
+			return m.detailsOverlayLines(t)
+		default:
+			return lines
+		}
+	}
+	for i := range m.overlay.stack {
+		frame := &m.overlay.stack[i]
+		frame.help = rebuild(frame.kind, frame.help)
+	}
+	m.overlay.help = rebuild(m.overlay.kind, m.overlay.help)
+	if file := m.overlay.file; file != nil {
+		m.themeList(&file.list)
+	}
+	if model := m.overlay.model; model != nil {
+		m.themeList(&model.list)
+	}
+	if effort := m.overlay.effort; effort != nil {
+		m.themeList(&effort.list)
+	}
+	if session := m.overlay.session; session != nil {
+		m.themeList(&session.list)
+	}
+	if overlay := m.overlay.table; overlay != nil {
+		overlay.table.SetStyles(table.Styles{
+			Header:   t.label,
+			Cell:     lipgloss.NewStyle().Padding(0, 1),
+			Selected: lipgloss.NewStyle().Reverse(true),
+		})
+	}
+}
+
 func renderScroll(lines []string, width, height, offset int) string {
 	if len(lines) == 0 {
 		return ""
@@ -410,7 +491,15 @@ func wrapOverlayLines(lines []string, width int) []string {
 }
 
 func (m *App) openHelpOverlay() tea.Cmd {
-	t := newTheme(m.noColor)
+	m.overlay.push(OverlayHelp)
+	m.overlay.help = m.helpOverlayLines(m.uiTheme())
+	m.overlay.resize(m, m.width, m.height)
+	return nil
+}
+
+// helpOverlayLines renders the help body for one palette. It is rebuilt when a
+// live theme change repaints the open overlays.
+func (m *App) helpOverlayLines(t uiTheme) []string {
 	lines := []string{t.label.Render("commands")}
 	lines = append(lines, slashCommandHelpLines()...)
 	lines = append(lines,
@@ -445,10 +534,7 @@ func (m *App) openHelpOverlay() tea.Cmd {
 		t.dim.Render("terminal's bypass: hold Shift while dragging (Option-drag in"),
 		t.dim.Render("iTerm2). Paste with Ctrl+Shift+V or Shift+middle-click."),
 	)
-	m.overlay.push(OverlayHelp)
-	m.overlay.help = lines
-	m.overlay.resize(m, m.width, m.height)
-	return nil
+	return lines
 }
 
 func detailsSession(m *App) string {
@@ -475,7 +561,15 @@ func effortLabel(value string) string {
 }
 
 func (m *App) openDetailsOverlay() tea.Cmd {
-	t := newTheme(m.noColor)
+	m.overlay.push(OverlayDetails)
+	m.overlay.help = m.detailsOverlayLines(m.uiTheme())
+	m.overlay.resize(m, m.width, m.height)
+	return nil
+}
+
+// detailsOverlayLines renders the details body for one palette. It is rebuilt
+// when a live theme change repaints the open overlays.
+func (m *App) detailsOverlayLines(t uiTheme) []string {
 	lines := []string{
 		t.label.Render("session"),
 		"session:    " + detailsSession(m),
@@ -495,6 +589,7 @@ func (m *App) openDetailsOverlay() tea.Cmd {
 		"color:      " + SanitizeLine(m.colorProfile),
 		"no-color:   " + fmt.Sprintf("%v", m.noColor),
 		"images:     " + SanitizeLine(m.imageProtocol),
+		"theme:      " + themeDisplay(m.effectiveTheme()),
 	}
 	if provider, ok := m.host.(DetailsProvider); ok {
 		d := provider.Details()
@@ -520,10 +615,7 @@ func (m *App) openDetailsOverlay() tea.Cmd {
 			"http timeout: "+formatTimeout(d.HTTPTimeout),
 		)
 	}
-	m.overlay.push(OverlayDetails)
-	m.overlay.help = lines
-	m.overlay.resize(m, m.width, m.height)
-	return nil
+	return lines
 }
 
 // tableOverlay renders the most recent markdown table.
@@ -541,7 +633,7 @@ func (m *App) openTableOverlay() tea.Cmd {
 		m.notice = "no markdown table in the transcript"
 		return nil
 	}
-	t := newTheme(m.noColor)
+	t := m.uiTheme()
 	cols := make([]table.Column, len(data.headers))
 	for i, header := range data.headers {
 		w := ansi.StringWidth(header)
@@ -674,6 +766,7 @@ func (m *App) openFileOverlay() tea.Cmd {
 		m.notice = fo.err
 		return nil
 	}
+	m.themeList(&fo.list)
 	m.overlay.file = fo
 	m.overlay.push(OverlayFile)
 	m.overlay.resize(m, m.width, m.height)
@@ -906,6 +999,7 @@ func (m *App) openModelOverlay() tea.Cmd {
 	}
 	items := modelItems(m.models, m.currentModelID())
 	ml := list.New(items, list.NewDefaultDelegate(), 40, 8)
+	m.themeList(&ml)
 	current := 0
 	for i, choice := range m.models {
 		if choice.ID == m.currentModelID() {
@@ -1022,6 +1116,7 @@ func (m *App) openEffortOverlay() tea.Cmd {
 		}
 	}
 	el := list.New(items, list.NewDefaultDelegate(), 40, 8)
+	m.themeList(&el)
 	el.Select(selected)
 	el.SetShowFilter(true)
 	el.SetShowStatusBar(false)
@@ -1125,6 +1220,7 @@ func (m *App) openResumeOverlay() tea.Cmd {
 		return nil
 	}
 	sl := list.New(sessionItems(choices), list.NewDefaultDelegate(), 40, 8)
+	m.themeList(&sl)
 	sl.SetShowFilter(true)
 	sl.SetShowStatusBar(false)
 	sl.SetShowHelp(false)

@@ -24,7 +24,7 @@ func plainRows(lines []string) []string {
 }
 
 func TestRenderFoldedShape(t *testing.T) {
-	theme := newTheme(true)
+	theme := uiThemeFor(true, ThemeDefault)
 	body := []string{"one", "two", "three", "four", "five"}
 
 	collapsed := renderFolded(theme, "header", body, 3, true)
@@ -54,7 +54,7 @@ func TestThinkingCollapsesToTheTail(t *testing.T) {
 		kind: itemThinking,
 		text: "first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth\nninth\nconclusion",
 	}
-	collapsed := plainRows(app.renderThinking(newTheme(true), it))
+	collapsed := plainRows(app.renderThinking(uiThemeFor(true, ThemeDefault), it))
 	if collapsed[0] != "thinking" {
 		t.Fatalf("header = %q", collapsed[0])
 	}
@@ -69,7 +69,7 @@ func TestThinkingCollapsesToTheTail(t *testing.T) {
 	}
 
 	app.expandAll = true
-	expanded := plainRows(app.renderThinking(newTheme(true), it))
+	expanded := plainRows(app.renderThinking(uiThemeFor(true, ThemeDefault), it))
 	if len(expanded) != 11 {
 		t.Fatalf("expanded rows = %d, want 11: %q", len(expanded), expanded)
 	}
@@ -86,7 +86,7 @@ func TestThinkingFoldCountsWrappedRows(t *testing.T) {
 	app.setSize(40, 24)
 	it := &transcriptItem{kind: itemThinking, text: strings.Repeat("word ", 80)}
 
-	collapsed := plainRows(app.renderThinking(newTheme(true), it))
+	collapsed := plainRows(app.renderThinking(uiThemeFor(true, ThemeDefault), it))
 	if got, want := len(collapsed), 1+1+foldedTailRows; got != want {
 		t.Fatalf("collapsed rows = %d, want %d: %q", got, want, collapsed)
 	}
@@ -95,7 +95,7 @@ func TestThinkingFoldCountsWrappedRows(t *testing.T) {
 	}
 
 	app.expandAll = true
-	expanded := app.renderThinking(newTheme(true), it)
+	expanded := app.renderThinking(uiThemeFor(true, ThemeDefault), it)
 	if len(expanded) <= len(collapsed) {
 		t.Fatalf("a wrapped line did not expand: collapsed=%d expanded=%d", len(collapsed), len(expanded))
 	}
@@ -104,7 +104,7 @@ func TestThinkingFoldCountsWrappedRows(t *testing.T) {
 	// terminal width and the collapsed height still holds.
 	app.expandAll = false
 	long := &transcriptItem{kind: itemThinking, text: strings.Repeat("x", 200)}
-	for i, row := range app.renderThinking(newTheme(true), long) {
+	for i, row := range app.renderThinking(uiThemeFor(true, ThemeDefault), long) {
 		if width := ansi.StringWidth(row); width > app.width {
 			t.Fatalf("row %d is %d cells wide, the terminal is %d: %q", i, width, app.width, ansi.Strip(row))
 		}
@@ -117,7 +117,7 @@ func TestCollapsedThinkingKeepsTheCapTextMarker(t *testing.T) {
 		kind: itemThinking,
 		text: CapText(strings.Repeat("reasoning ", 7_000), maxThinkingItemText),
 	}
-	rendered := plainRows(app.renderThinking(newTheme(true), it))
+	rendered := plainRows(app.renderThinking(uiThemeFor(true, ThemeDefault), it))
 	if !strings.Contains(strings.Join(rendered, "\n"), "[truncated ") {
 		t.Fatalf("collapsed thinking hid the CapText marker: %q", rendered)
 	}
@@ -136,7 +136,7 @@ func TestToolCollapsesToTheTailAndKeepsItsHeader(t *testing.T) {
 		output:   output.String(),
 	}
 
-	collapsed := plainRows(app.renderTool(newTheme(true), it))
+	collapsed := plainRows(app.renderTool(uiThemeFor(true, ThemeDefault), it))
 	header := collapsed[0]
 	for _, want := range []string{"tool run_command", "go test ./...", "error exit_1", "truncated", "timeout"} {
 		if !strings.Contains(header, want) {
@@ -151,7 +151,7 @@ func TestToolCollapsesToTheTailAndKeepsItsHeader(t *testing.T) {
 	}
 
 	app.expandAll = true
-	expanded := plainRows(app.renderTool(newTheme(true), it))
+	expanded := plainRows(app.renderTool(uiThemeFor(true, ThemeDefault), it))
 	if expanded[0] != header {
 		t.Fatalf("tool header changed between states: %q vs %q", expanded[0], header)
 	}
@@ -175,7 +175,7 @@ func TestToolHeaderUsesTheIntentAsTitle(t *testing.T) {
 		intent: "Fix the parser",
 		ok:     true,
 	}
-	header := plainRows(app.renderTool(newTheme(true), it))[0]
+	header := plainRows(app.renderTool(uiThemeFor(true, ThemeDefault), it))[0]
 	for _, want := range []string{"tool edit_file", "Fix the parser", "ok"} {
 		if !strings.Contains(header, want) {
 			t.Fatalf("tool header lacks %q: %q", want, header)
@@ -187,7 +187,7 @@ func TestToolHeaderUsesTheIntentAsTitle(t *testing.T) {
 
 	// A call without an intent keeps the argument preview.
 	it.intent = ""
-	if header := plainRows(app.renderTool(newTheme(true), it))[0]; !strings.Contains(header, `"path"`) {
+	if header := plainRows(app.renderTool(uiThemeFor(true, ThemeDefault), it))[0]; !strings.Contains(header, `"path"`) {
 		t.Fatalf("tool header lost the argument fallback: %q", header)
 	}
 }
@@ -201,7 +201,7 @@ func TestExpandedToolKeepsTheCapTextMarker(t *testing.T) {
 		output: CapText(strings.Repeat("x\n", 40_000), maxTranscriptItemText),
 	}
 	app.expandAll = true
-	rendered := plainRows(app.renderTool(newTheme(true), it))
+	rendered := plainRows(app.renderTool(uiThemeFor(true, ThemeDefault), it))
 	text := strings.Join(rendered, "\n")
 	if !strings.Contains(text, "[truncated ") {
 		t.Fatalf("expanded tool hid the CapText marker:\n%s", text)

@@ -293,13 +293,13 @@ line shows the active mode.
 Opens a browser for every key in the active config file
 (`-config`/`ACODE_CONFIG`, default `<state-dir>/config.json`): model,
 provider, workspace, provider and catalog URLs, thinking effort, run budgets,
-timeouts, usage/logging switches, SearXNG and `web_fetch` settings, the two
-display preferences, and an `agent_overrides` row that opens `/agents`. The
-value column shows the saved value; for a key the file does not set it shows
-the current effective value. The source column is `file`, `flag`, `env`, or
-`current` (`runtime` for a display toggle changed since startup), and the footer
-explains the selected row and warns when a flag or environment variable wins
-over a saved value.
+timeouts, usage/logging switches, SearXNG and `web_fetch` settings, the display
+preferences (`ui_rich`, `ui_expand_all`, `ui_theme`), and an `agent_overrides`
+row that opens `/agents`. The value column shows the saved value; for a key the
+file does not set it shows the current effective value. The source column is
+`file`, `flag`, `env`, or `current` (`runtime` when a live display value no
+longer matches the file), and the footer explains the selected row and warns
+when a flag or environment variable wins over a saved value.
 
 Keys:
 
@@ -315,21 +315,22 @@ Keys:
 Values are checked with the same rules as startup: model IDs against the loaded
 catalog when it is available, provider names, workspace existence, base and
 catalog URLs, SearXNG and `web_fetch` URLs, duration bounds, non-negative
-budgets, a positive context window, and thinking effort against the effective
-model. The candidate file's own values are validated again before the atomic
+budgets, a positive context window, thinking effort against the effective
+model, and theme names. The candidate file's own values are validated again
+before the atomic
 0600 replacement, so a malformed external edit is reported instead of
 overwritten. Every other key is preserved. A config path inside the workspace
 is refused, because operator settings must not become repository-controlled
 state, and `-config ""` disables the file, so the footer says edits cannot be
 saved.
 
-A saved value is read at the next startup. The two display preferences,
-`ui_rich` and `ui_expand_all`, also apply to the current process immediately. A
-key supplied by an explicit flag or environment variable keeps winning in this
-process; the footer names that layer. The `web_fetch_key` value is never shown,
-prefilled, or echoed: the row reports `set` or `(unset)`, and the editor buffer
-is masked. The overlay also warns when the `web_fetch` provider/endpoint pair is
-incomplete, because either key can be entered first.
+A saved value is read at the next startup. The display preferences,
+`ui_rich`, `ui_expand_all`, and `ui_theme`, also apply to the current process
+immediately. A key supplied by an explicit flag or environment variable keeps
+winning in this process; the footer names that layer. The `web_fetch_key` value
+is never shown, prefilled, or echoed: the row reports `set` or `(unset)`, and
+the editor buffer is masked. The overlay also warns when the `web_fetch`
+provider/endpoint pair is incomplete, because either key can be entered first.
 
 In `-ui-json`, the overlay appears as `frame.overlay: "settings"`; a client may
 send `r` as a one-character text message to reset the selected row. Saves and
