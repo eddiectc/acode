@@ -1,31 +1,10 @@
-# Rootless Podman override for compose.yaml.
-#
-# A rootless Podman container maps the caller onto container root by default,
-# so the image user 1000 does not own the bind-mounted workspace and cannot
-# write the files the agent edits (docs/container.md section 4). keep-id maps
-# the caller onto UID/GID 1000 instead, which is what
-# `--userns=keep-id:uid=1000,gid=1000` does in docs/container.md section 2.
-#
-#   podman-compose -f compose.yaml -f compose.podman.yaml run --rm --build acode
-#
-# Docker Compose has no keep-id equivalent. Docker users on a host whose UID or
-# GID is not 1000 build the stack image with their own IDs instead:
-#
-#   ACODE_UID=$(id -u) ACODE_GID=$(id -g) docker compose build
-#
-# Rootful Podman and Docker have no keep-id: do not merge this file into them,
-# and do not pass it to a Docker-API provider that cannot honour it.
+# Rootless Podman override for compose.yaml: keep-id maps the caller onto the
+# image user, and in_pod: false gives each service its own namespaces instead
+# of podman-compose's shared pod, which refuses per-container userns and
+# network requests. Do not merge this into Docker or rootful Podman; Docker
+# users set ACODE_UID and ACODE_GID in .env instead.
+# See docs/container.md section 4.
 
-# podman-compose puts every service in one pod by default (resolve_pod_name
-# returns "pod_<project>" unless told otherwise). A pod owns the network and
-# user namespaces, so the per-container requests in compose.yaml are refused:
-# `--network` with `--pod` means the container joins the pod's namespace, and
-# the podman-run man page states that a userns/gidmap "cannot be set on the
-# container level when in a pod". That combination fails at container-create
-# time, which podman reports opaquely as "container create failed (no logs from
-# conmon)". Disabling the pod gives every service its own namespaces, exactly
-# as Docker Compose does, so `network_mode: service:searxng` and keep-id both
-# apply as written.
 x-podman:
   in_pod: false
 

@@ -1,61 +1,20 @@
-# LiteLLM gateway for the acode compose stack.
-#
-# This gateway is a credential holder and a single egress hop. It is not a
-# policy layer: no model_list, no routing, no translation, no allowlist, no
-# budget. Its whole job is to keep the real provider key out of the agent
-# container, so the key lives in one place you can rotate instead of in the
-# environment of a process that runs arbitrary tool calls.
-#
-# Why pass-through rather than a deployment: a deployment would parse, resolve,
-# and re-encode the request, which is translation you do not want from a
-# component whose only purpose is to attach a header. Pass-through forwards the
-# path and body untouched, so the wire format acode sends is the wire format the
-# upstream receives, and the upstream's own behaviour is what you test against.
-#
-# Routing with path: /go-native and include_subpath: true:
-#
-#   acode     POST http://litellm:4000/go-native/v1/chat/completions
-#   LiteLLM   POST https://opencode.ai/zen/go/v1/chat/completions
-#
-# so ACODE_PROVIDER_BASE_URL is http://litellm:4000/go-native/v1 and the
-# upstream base is `target` plus the rest of the path. `target` is the prefix
-# BEFORE /v1.
-#
-# What this does NOT give you, since there is no deployment: per-model budgets,
-# health checks, fallbacks, or a model allowlist. Spending limits belong at the
-# provider, and the master key is a spending credential for this route — anyone
-# who can reach the gateway with it can spend. Management endpoints are inert
-# here because no database is configured.
-#
-# ACODE_MODEL is forwarded verbatim as the request's "model", so it has to
-# satisfy two things at once: a models.dev catalog ID (acode resolves the
-# dialect, context window, and limits from that entry, and rejects a model the
-# catalog does not know) and a model name the upstream accepts. See
-# docs/container.md section 1.
-#
-# `auth: true` is explicit on purpose. The YAML path hands these entries over
-# as raw dictionaries and the endpoint-level check is
-# `auth is not None and str(auth).lower() == "true"`, so the model default does
-# not apply here. With it set, the route requires a LiteLLM key, and the only
-# key acode holds is the master key.
-#
-# `forward_headers: true` passes the client's headers upstream, so the upstream
-# sees acode's user agent and provider-specific headers such as
-# x-opencode-session. acode's Authorization does not leak: a client header
-# whose name matches a configured header is dropped before the merge, so the
-# Bearer below always wins. That is what lets the real upstream key live only
-# here.
-#
-# `target` is literal. LiteLLM expands os.environ/ in `headers`, not there, so
-# a different upstream means editing the URL in this file.
+# Pass-through gateway for the acode stack: a credential holder that keeps the
+# real provider key out of the agent container. It attaches the upstream key
+# and forwards path and body untouched, so ACODE_MODEL must be a name the
+# upstream accepts as well as a models.dev catalog ID. No model_list, routing,
+# or budget. See docs/container.md section 5.
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   pass_through_endpoints:
     - path: "/go-native"
+      # Everything after /go-native is appended to this literal URL, which is
+      # the upstream base before /v1. os.environ/ is expanded in headers only.
       target: "https://opencode.ai/zen/go"
       include_subpath: true
       forward_headers: true
+      # Explicit: for these entries the model default does not apply, and with
+      # it set the route requires the master key.
       auth: true
       headers:
         Authorization: "Bearer os.environ/OPENCODE_API_KEY"
