@@ -105,10 +105,11 @@ paste.
 
 Typing `/` opens a filtered command menu; `Tab` completes the highlighted
 command and `Enter` runs it. The commands are `/help`, `/model`, `/effort`,
-`/provider`, `/details`, `/settings`, `/agents`, `/agent-hub`, `/new`,
-`/resume`, `/files`, `/table`, `/image`, `/rich`, `/raw`, `/repaint`,
-`/refresh`, `/interrupt`, `/cancel`, and `/quit`. Unrecognized `/text` is sent
-as a normal message. The full reference is in [commands.md](docs/commands.md).
+`/provider`, `/details`, `/prompt`, `/request`, `/settings`, `/agents`,
+`/agent-hub`, `/new`, `/resume`, `/files`, `/table`, `/image`, `/rich`, `/raw`,
+`/repaint`, `/refresh`, `/interrupt`, `/cancel`, and `/quit`. Unrecognized
+`/text` is sent as a normal message. The full reference is in
+[commands.md](docs/commands.md).
 
 ## Sessions, resume, and fork
 
@@ -202,11 +203,12 @@ file, and built-in defaults, in that order. The file defaults to
 
 The common operational keys cover the model, workspace, provider base URL,
 thinking effort, run turn and token budgets, context and output caps, timeouts,
-`require_usage`, and `log_requests`. `searxng_url` configures `web_search`;
-`web_timeout`, `web_fetch_provider`, `web_fetch_url`, and `web_fetch_key`
-configure `web_fetch`. `agent_overrides` routes an agent's model, effort, turn
-cap, and enable state. `ui_rich` and `ui_expand_all` set the TUI's initial
-rendering and fold modes. Run budgets default to unlimited.
+`require_usage`, and `log_requests`. `log_requests` records the projected model
+request that `/request` shows and applies at the next startup. `searxng_url`
+configures `web_search`; `web_timeout`, `web_fetch_provider`, `web_fetch_url`,
+and `web_fetch_key` configure `web_fetch`. `agent_overrides` routes an agent's
+model, effort, turn cap, and enable state. `ui_rich` and `ui_expand_all` set the
+TUI's initial rendering and fold modes. Run budgets default to unlimited.
 
 `/settings` lists every config-file key with its saved or effective value and
 the layer that supplies it, then writes edits atomically. It masks

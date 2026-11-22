@@ -27,6 +27,8 @@ var slashCommands = []slashCommand{
 	{names: []string{"provider"}, usage: "/provider", summary: "active provider and configuration"},
 	{names: []string{"effort"}, usage: "/effort [value]", summary: "pick a thinking effort for the next run", hasArg: true},
 	{names: []string{"details"}, usage: "/details", summary: "session, terminal, and config details"},
+	{names: []string{"prompt"}, usage: "/prompt", summary: "system prompt recorded for this session"},
+	{names: []string{"request"}, usage: "/request", summary: "latest projected model request and response"},
 	{names: []string{"new"}, usage: "/new", summary: "start a new session (idle)"},
 	{names: []string{"resume"}, usage: "/resume", summary: "resume a previous session (idle)"},
 	{names: []string{"files", "file"}, usage: "/files", summary: "workspace file picker (idle)"},
@@ -217,6 +219,10 @@ func (m *App) handleSlashCommand(text string) (tea.Cmd, bool) {
 		return m.commandEffort(args), true
 	case "details":
 		return m.openDetailsOverlay(), true
+	case "prompt":
+		return m.openPromptOverlay(), true
+	case "request":
+		return m.openRequestOverlay(), true
 	case "new":
 		return m.commandNewSession(), true
 	case "resume":

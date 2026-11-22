@@ -23,9 +23,10 @@ import (
 // closing it restores the overlay below and then the transcript.
 type overlayState struct {
 	kind   OverlayKind
-	stack  []OverlayKind
+	stack  []overlayFrame
 	focus  int
 	help   []string
+	title  string
 	scroll int
 
 	table    *tableOverlay
@@ -38,9 +39,19 @@ type overlayState struct {
 	settings *settingsOverlay
 }
 
+// overlayFrame is the top overlay's scrollable text state, saved when another
+// overlay opens above it. Restoring it keeps a stacked Help, Details, prompt,
+// or request panel's own body and title instead of the overlay above's.
+type overlayFrame struct {
+	kind   OverlayKind
+	help   []string
+	title  string
+	scroll int
+}
+
 func (o *overlayState) push(kind OverlayKind) {
 	if o.kind != OverlayNone {
-		o.stack = append(o.stack, o.kind)
+		o.stack = append(o.stack, overlayFrame{kind: o.kind, help: o.help, title: o.title, scroll: o.scroll})
 		if len(o.stack) > 4 {
 			o.stack = o.stack[len(o.stack)-4:]
 		}
@@ -53,8 +64,9 @@ func (o *overlayState) push(kind OverlayKind) {
 func (o *overlayState) pop() {
 	o.kind = OverlayNone
 	if n := len(o.stack); n > 0 {
-		o.kind = o.stack[n-1]
+		frame := o.stack[n-1]
 		o.stack = o.stack[:n-1]
+		o.kind, o.help, o.title, o.scroll = frame.kind, frame.help, frame.title, frame.scroll
 	}
 	o.focus = 0
 }
@@ -167,7 +179,7 @@ func (o *overlayState) resizeCmd(m *App, width, height int) tea.Cmd {
 // while a modal is open.
 func (o *overlayState) wheel(up bool) {
 	switch o.kind {
-	case OverlayHelp, OverlayDetails:
+	case OverlayHelp, OverlayDetails, OverlayPrompt, OverlayRequest:
 		if up {
 			o.scroll = max(0, o.scroll-mouseWheelLines)
 		} else {
@@ -218,7 +230,7 @@ func (o *overlayState) update(m *App, msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 	switch o.kind {
-	case OverlayHelp, OverlayDetails, OverlayAgentHub:
+	case OverlayHelp, OverlayDetails, OverlayPrompt, OverlayRequest, OverlayAgentHub:
 		switch key {
 		case "up", "k":
 			o.scroll = max(0, o.scroll-1)
@@ -281,6 +293,11 @@ func (o *overlayState) view(m *App) string {
 	case OverlayHelp:
 		title = "help"
 		content = renderScroll(o.help, innerW, innerH, o.scroll)
+	case OverlayPrompt, OverlayRequest:
+		title = o.title
+		// The title row is part of the box, so the scroll area is one row
+		// shorter; otherwise a full-height body pushes the title out.
+		content = renderScrollWrapped(o.help, innerW, max(1, innerH-1), o.scroll)
 	case OverlayDetails:
 		title = "details"
 		content = renderScroll(o.help, innerW, innerH, o.scroll)
@@ -364,6 +381,34 @@ func renderScroll(lines []string, width, height, offset int) string {
 	return fitLines(strings.Join(lines[offset:end], "\n"), width, height)
 }
 
+// renderScrollWrapped is the wrap-aware scroll path for the prompt and request
+// views. They exist to show their content, so a long line is wrapped instead of
+// truncated. The offset counts rendered rows, which keeps scrolling stable when
+// a resize changes the wrap.
+func renderScrollWrapped(lines []string, width, height, offset int) string {
+	wrapped := wrapOverlayLines(lines, width)
+	if len(wrapped) == 0 {
+		return ""
+	}
+	offset = clampInt(offset, 0, max(0, len(wrapped)-height))
+	end := min(len(wrapped), offset+height)
+	return strings.Join(wrapped[offset:end], "\n")
+}
+
+// wrapOverlayLines hard-wraps each logical line at width cells. Leading spaces
+// are preserved so JSON indentation and section alignment survive.
+func wrapOverlayLines(lines []string, width int) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, strings.Split(ansi.Hardwrap(line, width, true), "\n")...)
+	}
+	return out
+}
+
 func (m *App) openHelpOverlay() tea.Cmd {
 	t := newTheme(m.noColor)
 	lines := []string{t.label.Render("commands")}
@@ -400,8 +445,8 @@ func (m *App) openHelpOverlay() tea.Cmd {
 		t.dim.Render("terminal's bypass: hold Shift while dragging (Option-drag in"),
 		t.dim.Render("iTerm2). Paste with Ctrl+Shift+V or Shift+middle-click."),
 	)
-	m.overlay.help = lines
 	m.overlay.push(OverlayHelp)
+	m.overlay.help = lines
 	m.overlay.resize(m, m.width, m.height)
 	return nil
 }
@@ -475,8 +520,8 @@ func (m *App) openDetailsOverlay() tea.Cmd {
 			"http timeout: "+formatTimeout(d.HTTPTimeout),
 		)
 	}
-	m.overlay.help = lines
 	m.overlay.push(OverlayDetails)
+	m.overlay.help = lines
 	m.overlay.resize(m, m.width, m.height)
 	return nil
 }

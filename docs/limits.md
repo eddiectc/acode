@@ -35,7 +35,7 @@ names which sources exist for that row.
 | `-model-timeout` | 0 (none) | flag, `ACODE_MODEL_TIMEOUT`, `model_timeout` | Per model attempt when explicit and positive; `0`/omitted no harness deadline; negative is a config error. |
 | `-http-timeout` | 15 minutes | flag, `ACODE_HTTP_TIMEOUT`, `http_timeout` | Outer bound on a provider request, including body reads. Must be positive in every layer. |
 | `-catalog-timeout` | 15 seconds | flag, `ACODE_CATALOG_TIMEOUT`, `catalog_timeout` | Bound on one catalog request, including body reads. Must be positive; valid for terminal catalog actions too. |
-| `-log-requests` / `ACODE_LOG_REQUESTS` | off | flag, env, `log_requests` | Records each projected model request as a debug event, capped at 1 MiB. |
+| `-log-requests` / `ACODE_LOG_REQUESTS` | off | flag, env, `log_requests` | Records each projected model request as a debug event; the aharness request cap applies (see the [SDK limits](https://github.com/eddiectc/aharness/blob/main/docs/limits.md)). `/request` displays the latest one. A saved change applies at the next startup. |
 | `-task` / `-task-file` | no read cap | flag | Per-invocation only; effective transcript text is 64 KiB. |
 | Workspace instructions | 16 KiB | — (fixed policy) | New sessions only: the workspace-root `AGENTS.md`, read once through `tools.Workspace.ReadDisplayFile`. An absent or empty file changes nothing. A larger, symlinked, non-regular, or unreadable file is skipped with one warning and the session still starts. The text is recorded in `session_start.system_prompt` and `session_start.appended_prompt`; `appended_prompt` is provenance, not a replay key. Resume and fork replay the recording and never re-read; fresh delegated children inherit the recorded text. |
 | Steering message | 64 KiB | TUI | Composer submission while a run is active. |
@@ -88,6 +88,8 @@ contract. See [tui.md](tui.md) for shipped behavior and
 | Widget list / file picker entries | 1,000 / 2,000 per directory | File picker does not recurse, read contents, follow symlinks, or list `.git`; filter query is 64 bytes. |
 | Resume picker sessions / head | 100 per workspace / 64 events | Same canonical workspace only; the active session is excluded; unreadable, linked, or corrupt logs are skipped; each row preview is sanitized and cut to 160 bytes. |
 | Overlay stack | 4 | Deeper requests close the oldest non-modal overlay with a notice. |
+| System prompt view | SDK-recorded prompt, whole | `/prompt` shows the recorded text; when the SDK's record cap truncated it, the header says so. Long lines wrap at the overlay width. |
+| Model exchange view | 64 KiB per payload (32 KiB head + 32 KiB tail) | `/request` keeps both ends of the pretty-printed recorded payload before sanitization and inserts one `[omitted N bytes]` marker counting bytes of that payload. The session log keeps the full event. Long lines wrap. |
 | Config settings editor | 512 bytes | One config-file value; longer input is refused, values use the startup validation rules, and `web_fetch_key` is masked and never rendered. |
 | Image file / dimensions | 8 MiB / 4096×4096 | Larger files are rejected with a placeholder. `image.DecodeConfig` runs first. |
 | Decoded image pixels | 16 Mi (4096×4096 max) | Larger images are rejected before full decode. |

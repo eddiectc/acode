@@ -114,6 +114,7 @@ internal/tui/
   widgets.go           # table/file/model/effort/session overlays and focus
   agents_overlay.go    # /agent-hub and /agents browsers
   settings_overlay.go  # /settings config-file browser and validation
+  transparency_overlay.go # /prompt and /request views and the wrap path
   child_view.go        # focused child transcript and delegation steering
   image.go             # workspace image resolver, ntcharts picture, viewer
   protocol.go          # -ui-json v1 commands, events, frames, snapshots
@@ -230,8 +231,17 @@ split by feature so the app can omit one:
 | `SessionManager` | Idle `/new` and `/resume` plus the resume picker. |
 | `WorkspaceProvider` | File picker and workspace images. |
 | `TodoProvider` | Restore the todo widget from the recorded result. |
+| `PromptProvider` | The recorded system prompt for `/prompt`. |
+| `ExchangeProvider` | The latest projected model attempt for `/request`. |
 | Agent browser | Definition overrides and enable/disable state. |
 | Child view | Focused child history, steering, and status. |
+
+`PromptProvider` and `ExchangeProvider` are optional: a host that omits one
+makes its command report that the view is unavailable. The app reads the active
+log on demand with `session.ReadSnapshot`, which takes no `flock`, then asks the
+SDK for the prompt (`agent.Inspect`) and the latest attempt
+(`agent.LatestModelExchange`). The app formats and displays the result; it never
+pairs model events or decodes `session_start` itself.
 
 `agent.Config.Display` is the single runner-to-UI path. Events are display-only
 and carry no durable truth. `agent.History` reconstructs the transcript from the

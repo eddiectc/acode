@@ -1,14 +1,15 @@
 # acode prompt and request transparency build plan
 
 - **Date:** 2026-11-19
-- **Status:** proposed. No code or shipped behavior has changed; this document
-  records the research, the contract decisions, and the implementation plan.
+- **Status:** implemented 2026-11-22 for Phases 0–4 against aharness v0.5.0.
+  Phases 1–3 shipped together; the automated gates in §4.1 pass and the
+  manual smokes are recorded there as open.
 - **Source:** a request to make acode transparent about the prompts it sends,
   a 2026-11-19 survey of acode and aharness v0.3.0, and a 2026-11-19 web
   research pass over popular coding agents (§2).
-- **Target:** Go 1.27.4, module `acode`, aharness v0.3.0 baseline. The exchange
-  reader and the prompt-cap signal need one small aharness addition (§3.4) and
-  a new tagged release; this plan does not use a `replace` fork or an app-side
+- **Target:** Go 1.27.4, module `acode`, aharness v0.5.0 baseline. Phase 0
+  shipped the exchange reader and the prompt-cap signal in aharness v0.5.0
+  (§3.4); acode pins that tagged release and uses no `replace` fork or app-side
   shim.
 - **Architecture:** [architecture.md](../architecture.md) defines the host
   boundary. [tui.md](../tui.md) and [commands.md](../commands.md) stay
@@ -39,11 +40,11 @@ Phases:
 
 | Phase | Contents | Status |
 |---|---|---|
-| 0 | Upstream: `agent.LatestModelExchange` plus its pairing/run-boundary tests, in aharness | Proposed upstream |
-| 1 | Host data plane: public TUI views, prompt extraction, exchange formatting, pretty JSON, caps; adopts the tagged Phase 0 release | Proposed |
-| 2 | `/prompt` and `/request` commands plus overlays, wrap-aware rendering, and `-ui-json` visibility | Proposed |
-| 3 | Current-reference and README updates | Proposed |
-| 4 | Verification: unit, TUI, headless integration, race, `make dod` | Proposed |
+| 0 | Upstream: `agent.LatestModelExchange` plus its pairing/run-boundary tests, in aharness | Shipped in aharness v0.5.0 |
+| 1 | Host data plane: public TUI views, prompt extraction, exchange formatting, pretty JSON, caps; adopts the tagged Phase 0 release | Implemented 2026-11-22 |
+| 2 | `/prompt` and `/request` commands plus overlays, wrap-aware rendering, and `-ui-json` visibility | Implemented 2026-11-22 |
+| 3 | Current-reference and README updates | Implemented 2026-11-22 |
+| 4 | Verification: unit, TUI, headless integration, race, `make dod` | Automated gates pass; manual smokes pending (§4.1) |
 | 5 | Deferred follow-ups: CLI/automation view, exact wire capture upstream | Deferred |
 
 ## 1. What acode already has
@@ -544,9 +545,55 @@ undocumented command or protocol value.
 | P4.4 | Manual fake-provider smoke: start `-ui-json`, submit a task with `-log-requests`, wait idle, run `/prompt` and `/request`, inspect frames; repeat without `-log-requests` and confirm the response-only notice. | The overlay content matches the session log; the no-request path is honest. |
 | P4.5 | Real-provider smoke if a token is available; otherwise record the exact pending check. | The plan records what was and was not verified. |
 
-Plan-only verification: this change adds no code, so the code gates above are
-not run. `make docs-check` passes for the new relative links and the
-docs-index entry. The implementation phases own the remaining verification.
+Plan-only verification (2026-11-19): the plan itself added no code, so the code
+gates above were not run; `make docs-check` covered the new links. The
+implementation's verdict is in §4.1.
+
+### 4.1 Deviations and verification (2026-11-22)
+
+Deviations from the design above:
+
+1. Phase 0 shipped in aharness v0.5.0, which supersedes the mistagged v0.4.2;
+   acode pins v0.5.0.
+2. `Prompt()` and `Exchange()` copy the log path, the agent catalog, and the
+   effective `log_requests` value under the host lock, then call
+   `promptView(path, agents)` or `exchangeView(path, logRequests)`. The split
+   keeps the lock out of the read and lets the legacy, capped, and corrupt log
+   cases be tested without an engine host.
+3. `PromptView` carries no error field. A prompt version that cannot be
+   rendered returns the version plus a wrapped error, and the overlay shows
+   `prompt text unavailable: <error>`; a read error is a status-line notice.
+   This satisfies §3.2 and the §5 matrix row at the same time.
+4. The scroll area is one row shorter than the overlay box so the title stays
+   visible when the body fills it. The overlay stack saves and restores the
+   previous panel's body, title, and scroll position, so a stacked `F1` or
+   `Ctrl-X` no longer leaves the new overlay's title above the old body. Help
+   and Details keep their existing truncating scroll path.
+5. The `bytes` value in each `/request` section header is the length of the
+   pretty-printed payload — the same string the 64 KiB display cap measures —
+   not the length of the raw event JSON.
+
+Verification:
+
+- `go.mod` pins aharness v0.5.0 and `go mod tidy` reports no drift; the go.sum
+  hashes match the public checksum database.
+- Coverage: prompt before the first run; recorded, reconstructed, capped, and
+  unsupported prompts; resumed recordings replayed verbatim and a fork's own
+  log read; pairing, logging-off, in-flight, and cross-run attempts;
+  the `/request` header matching the recorded `model_request` payload; the
+  head-and-tail cap; sanitization; wrap and title visibility; scroll and close;
+  missing capabilities; no new protocol event; `-ui-json` overlay values.
+- `go test -race -count=1 ./...` includes a real locked `session.Store`
+  appending while `Exchange` reads through `session.ReadSnapshot`.
+- `make dod` passes: docs-check, goimports, vet, golangci-lint, race tests,
+  build, and govulncheck.
+
+Still open:
+
+- Real-provider smoke (§4.5). No provider token was available, so the overlays
+  were verified against a fake provider only.
+- Real-terminal smoke of the interactive overlay (hand-driven keys, wheel,
+  resize). The renderer is covered by unit tests and `-ui-json` frames only.
 
 ### Phase 5 — deferred follow-ups
 

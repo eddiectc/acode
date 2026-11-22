@@ -86,7 +86,7 @@ number is rejected so a unit typo cannot silently mean nanoseconds.
 | `http_timeout` | duration | `-http-timeout` / `ACODE_HTTP_TIMEOUT` | Must be positive; default 15m. |
 | `catalog_timeout` | duration | `-catalog-timeout` / `ACODE_CATALOG_TIMEOUT` | Must be positive; default 15s. |
 | `require_usage` | boolean | `-require-usage` / `ACODE_REQUIRE_USAGE` | Per-run; not inherited. |
-| `log_requests` | boolean | `-log-requests` / `ACODE_LOG_REQUESTS` | Records request debug events. |
+| `log_requests` | boolean | `-log-requests` / `ACODE_LOG_REQUESTS` | Records each projected model request as a debug event; `/request` reads it. A saved change applies at the next startup. |
 | `ui_rich` | boolean | none | TUI initial assistant rendering: `true` is rich markdown, `false` is raw source. Default `true`. Display-only; no session event records it. |
 | `ui_expand_all` | boolean | none | TUI initial block fold mode: `true` expands thinking and tool blocks, `false` folds them. Default `false`. `F3` still toggles only the current process. |
 | `agent_overrides` | object | none | Per-agent routing overrides; see §2.2. |

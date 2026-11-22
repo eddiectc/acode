@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/eddiectc/aharness/agent"
 	"github.com/eddiectc/aharness/engine"
 	"github.com/eddiectc/aharness/model"
+	"github.com/eddiectc/aharness/session"
 	"github.com/eddiectc/aharness/tools"
 )
 
@@ -550,6 +552,138 @@ func (h *tuiHost) effectiveConfigLocked() config {
 	return cfg
 }
 
+// sessionReadState is what a log read needs from the host: the active session
+// log path, the agent catalog used to rebuild a legacy prompt, and the effective
+// log_requests setting. It is copied under the host lock so the read itself
+// holds nothing.
+type sessionReadState struct {
+	path        string
+	agents      []agent.AgentInfo
+	logRequests bool
+}
+
+// readState copies the inputs for an on-demand log read. The engine host owns
+// the path; a session switch replaces the host under the same lock, so a switch
+// cannot interleave with the copy.
+func (h *tuiHost) readState() (sessionReadState, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return sessionReadState{}, errors.New("session host is closed")
+	}
+	if h.host == nil {
+		return sessionReadState{}, errors.New("no session is open")
+	}
+	return sessionReadState{
+		path:        h.host.Path(),
+		agents:      h.cfg.Agents,
+		logRequests: h.cfg.LogRequests,
+	}, nil
+}
+
+// Prompt returns the system prompt recorded for the active session. It reads
+// the log through session.ReadSnapshot, which opens its own descriptor and
+// takes no flock, so the store's exclusive lock is not a conflict and a run may
+// keep appending while the view is built.
+func (h *tuiHost) Prompt() (tui.PromptView, error) {
+	state, err := h.readState()
+	if err != nil {
+		return tui.PromptView{}, err
+	}
+	return promptView(state.path, state.agents)
+}
+
+// promptView reads the recorded prompt from one session log. A log written
+// before the prompt was recorded is rebuilt from its prompt version and labelled
+// reconstructed: the rebuild uses the current identity and agent catalog, so the
+// text can differ from what originally ran.
+func promptView(path string, agents []agent.AgentInfo) (tui.PromptView, error) {
+	events, err := session.ReadSnapshot(path)
+	if err != nil {
+		return tui.PromptView{}, fmt.Errorf("read session for prompt: %w", err)
+	}
+	state, err := agent.Inspect(events)
+	if err != nil {
+		return tui.PromptView{}, fmt.Errorf("inspect session for prompt: %w", err)
+	}
+	view := tui.PromptView{
+		Text:    state.SystemPrompt,
+		Version: state.PromptVersion,
+		Tag:     state.PromptTag,
+		Bytes:   len(state.SystemPrompt),
+		Capped:  state.PromptCapped,
+	}
+	if view.Text != "" {
+		return view, nil
+	}
+	rendered, err := agent.RenderSystemPrompt(state.PromptVersion, state.Workspace, acodeIdentity, agents)
+	if err != nil {
+		// Keep the version so the overlay can name what could not be rendered.
+		return view, fmt.Errorf("reconstruct prompt version %q: %w", state.PromptVersion, err)
+	}
+	view.Text = rendered
+	view.Bytes = len(rendered)
+	view.Reconstructed = true
+	return view, nil
+}
+
+// Exchange returns the latest projected model attempt in the active session.
+// Selection, pairing, and the run boundary belong to the SDK reader; the host
+// only formats the recorded payloads.
+func (h *tuiHost) Exchange() (tui.ExchangeView, error) {
+	state, err := h.readState()
+	if err != nil {
+		return tui.ExchangeView{}, err
+	}
+	return exchangeView(state.path, state.logRequests)
+}
+
+// exchangeView reads the newest model attempt from one session log and
+// pretty-prints the recorded payloads.
+func exchangeView(path string, logRequests bool) (tui.ExchangeView, error) {
+	events, err := session.ReadSnapshot(path)
+	if err != nil {
+		return tui.ExchangeView{}, fmt.Errorf("read session for request: %w", err)
+	}
+	exchange, err := agent.LatestModelExchange(events)
+	if err != nil {
+		return tui.ExchangeView{}, fmt.Errorf("latest model exchange: %w", err)
+	}
+	view := tui.ExchangeView{
+		RequestSeq:  exchange.RequestSeq,
+		ResponseSeq: exchange.ResponseSeq,
+		Run:         exchange.Run,
+		Turn:        exchange.Turn,
+		HasRequest:  exchange.HasRequest,
+		HasResponse: exchange.HasResponse,
+		LogRequests: logRequests,
+	}
+	if exchange.HasRequest {
+		if view.Request, err = indentPayload(exchange.Request); err != nil {
+			return tui.ExchangeView{}, fmt.Errorf("request seq %d: %w", exchange.RequestSeq, err)
+		}
+	}
+	if exchange.HasResponse {
+		if view.Response, err = indentPayload(exchange.Response); err != nil {
+			return tui.ExchangeView{}, fmt.Errorf("response seq %d: %w", exchange.ResponseSeq, err)
+		}
+	}
+	return view, nil
+}
+
+// indentPayload pretty-prints one recorded payload in place with the project's
+// JSON writer, so field order and number spelling survive. It never re-encodes
+// a local struct, which would drop fields the app does not know.
+func indentPayload(raw []byte) (string, error) {
+	value := jsontext.Value(raw)
+	if err := value.Indent(jsontext.WithIndent("  ")); err != nil {
+		return "", fmt.Errorf("format recorded payload: %w", err)
+	}
+	return string(value), nil
+}
+
+// Details returns the configuration and terminal details for the details
+// overlay.
 func (h *tuiHost) Details() tui.Details {
 	h.mu.Lock()
 	defer h.mu.Unlock()
