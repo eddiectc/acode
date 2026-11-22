@@ -56,6 +56,46 @@ func TestCapTextRuneBoundary(t *testing.T) {
 	}
 }
 
+func TestCapTextMiddleKeepsBothEndsAndCountsOmitted(t *testing.T) {
+	text := "HEAD-" + strings.Repeat("x", 100<<10) + "-TAIL"
+	got := CapTextMiddle(text, 64<<10)
+	head, tail := 32<<10, 32<<10
+	if !strings.HasPrefix(got, text[:head]) {
+		t.Fatal("capped text lost its head")
+	}
+	if !strings.HasSuffix(got, text[len(text)-tail:]) {
+		t.Fatal("capped text lost its tail")
+	}
+	marker := "[omitted " + itoa(len(text)-head-tail) + " bytes]"
+	if !strings.Contains(got, marker) {
+		t.Fatalf("capped text lacks %q", marker)
+	}
+	if len(got) > 64<<10+len(marker)+2 {
+		t.Fatalf("capped text is %d bytes, want about the 64 KiB cap", len(got))
+	}
+
+	// Under the cap the text is unchanged; a non-positive cap yields nothing.
+	if got := CapTextMiddle("short", 64); got != "short" {
+		t.Fatalf("short text changed: %q", got)
+	}
+	if got := CapTextMiddle("short", 0); got != "" {
+		t.Fatalf("zero cap = %q, want empty", got)
+	}
+}
+
+func TestCapTextMiddleRuneBoundary(t *testing.T) {
+	// A two-byte rune straddling the head cut is dropped whole, so the result
+	// stays valid UTF-8: limit/2 is 3, which cuts the second é in half.
+	text := strings.Repeat("é", 40) + strings.Repeat("z", 6)
+	got := CapTextMiddle(text, 6)
+	if !utf8.ValidString(got) {
+		t.Fatalf("capped text is not valid UTF-8: %q", got)
+	}
+	if !strings.Contains(got, "omitted") {
+		t.Fatalf("missing omission marker: %q", got)
+	}
+}
+
 func FuzzSanitize(f *testing.F) {
 	f.Add("plain")
 	f.Add("a\x1b]52;c;x\x07b")

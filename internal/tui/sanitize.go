@@ -56,6 +56,30 @@ func CapText(s string, limit int) string {
 	return s[:cut] + "\n[truncated " + itoa(len(s)-cut) + " bytes]"
 }
 
+// CapTextMiddle keeps the beginning and the end of s within limit bytes of
+// recorded text, with one marker reporting how many recorded bytes it dropped.
+// The head and tail are cut on rune boundaries, so the rendered result may
+// exceed limit slightly. Header and footer content survive, which a head-only
+// cap would hide for a large recorded payload.
+func CapTextMiddle(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	head := limit / 2
+	tail := limit - head
+	for head > 0 && !utf8.ValidString(s[:head]) {
+		head--
+	}
+	for tail > 0 && !utf8.ValidString(s[len(s)-tail:]) {
+		tail--
+	}
+	omitted := len(s) - head - tail
+	return s[:head] + "\n[omitted " + itoa(omitted) + " bytes]\n" + s[len(s)-tail:]
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

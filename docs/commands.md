@@ -72,6 +72,8 @@ change and frames expose the resulting composer, menu rows, and overlay.
 | `/effort [value]` | optional effort value, or `default` | `F2` | next-run thinking effort |
 | `/provider` | none | `Ctrl-X` | active provider plus configuration details |
 | `/details` | none | `Ctrl-X` | session, terminal, and configuration details |
+| `/prompt` | none | none | system prompt recorded for the active session |
+| `/request` | none | none | latest projected model request and response |
 | `/new` | none | none | replace the active session with a fresh local session (idle) |
 | `/resume` | none | none | pick a previous session in this workspace and resume it (idle) |
 | `/files`, `/file` | none | `Ctrl-O` | workspace file picker (idle) |
@@ -111,6 +113,41 @@ model and dialect, thinking effort, cumulative turns and tokens, terminal
 capabilities, provider and base URL, prompt/toolset/harness versions, state
 directory, context and output limits, and configured run/model timeouts.
 Works while idle or running. `Esc` closes the overlay.
+
+### `/prompt`
+
+Opens the system prompt recorded in the active session's `session_start`: the
+prompt version, the recorded byte count, the prompt tag when the session
+recorded one, the source, and the prompt body. The body is the recorded text,
+not a Markdown rendering, and long lines wrap instead of truncating.
+
+A log written before the prompt was recorded is rebuilt from its prompt version
+and labelled `reconstructed`; the rebuild uses the current identity and agent
+catalog, so it can differ from what originally ran. When the SDK truncated the
+recording at its prompt cap, the header says so. Available as soon as the TUI
+opens, idle or running. Display-only: `Esc` closes it, no run starts, and no
+event is written.
+
+### `/request`
+
+Opens the latest projected model attempt: the newest recorded `model_request`
+or `model_response`, whichever came later, plus its pair when one exists in the
+same turn without an intervening run or session boundary. A newest request with
+no response is shown alone as in flight or failed.
+
+The bodies are the recorded event payloads pretty-printed in the SDK's field
+order, with each section header carrying the byte length of that displayed
+payload. `log_requests`
+decides whether a request was recorded; with it off, the response is shown and
+the request section reports that it was not recorded for this turn and names
+`-log-requests` and `/settings`. A saved setting applies at the next startup.
+The overlay keeps 32 KiB from each end of a payload, marks the omitted recorded
+bytes, and wraps long lines.
+
+These are projected payloads, not wire bytes: HTTP headers, auth, and exact
+request/response frames are not recorded. The request projection includes
+messages, tool schemas, tool results, and user text, which is why recording
+stays opt-in. Works idle or running; `Esc` closes.
 
 ### `/new`
 
@@ -389,6 +426,8 @@ that no run is active.
 /agent-hub                  live roster of the children in the current run
 /agents                     agent definitions and settings
 /settings                   all config-file settings, saved atomically
+/prompt                     system prompt recorded for this session
+/request                    latest projected request and response
 /interrupt                  stop the current model call; the run continues
 /cancel                     end the active run and return to idle
 /quit                       exit; an active run is canceled with exit code 130
@@ -404,9 +443,11 @@ Commands are composer text, not a new protocol command. Send:
 ```
 
 The same text/key stream drives autocomplete (`tab`, `up`, `down`, `esc`).
-Resulting overlays appear in `frame.overlay` (`help`, `details`, `model`,
-`effort`, `session`, `file`, `table`, `image`, `agent-hub`, `agents`, or
-`settings`); status feedback appears in the frame lines. `/model` and `/effort`
+Resulting overlays appear in `frame.overlay` (`help`, `details`, `prompt`,
+`request`, `model`, `effort`, `session`, `file`, `table`, `image`, `agent-hub`,
+`agents`, or `settings`); status feedback appears in the frame lines. `/prompt`
+and `/request` are display-only: they emit no protocol event and no session
+event. `/model` and `/effort`
 also emit the existing `model_changed` and `notice` events. `tool_started` and `tool_finished` gain an optional
 `subagent_tasks` array for a `delegate` call; there is no new event kind and no
 protocol version bump. `/new` and `/resume` emit a `notice` event with kind
@@ -416,7 +457,10 @@ protocol version bump. `/new` and `/resume` emit a `notice` event with kind
 
 The command surface adds no durable cap. Composer submissions use the existing
 64 KiB task/steering cap, the completion menu is a display-only list, and
-overlays, tables, and images keep their existing display caps. The `/resume`
+overlays, tables, and images keep their existing display caps. `/prompt` shows
+the recorded prompt whole up to the SDK's recording cap and `/request` keeps
+32 KiB from each end of one payload; both wrap long lines at the overlay
+width. The `/resume`
 picker scans at most 64 events from each candidate log and returns at most 100
 sessions per workspace; longer first messages are sanitized and cut for the row
 preview. The canonical values live in [limits.md §6](limits.md#6-tui-and--ui-json).

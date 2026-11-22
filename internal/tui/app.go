@@ -30,6 +30,8 @@ type OverlayKind string
 const (
 	OverlayNone     OverlayKind = "none"
 	OverlayHelp     OverlayKind = "help"
+	OverlayPrompt   OverlayKind = "prompt"
+	OverlayRequest  OverlayKind = "request"
 	OverlayDetails  OverlayKind = "details"
 	OverlayTable    OverlayKind = "table"
 	OverlayFile     OverlayKind = "file"
@@ -318,6 +320,50 @@ type Details struct {
 // DetailsProvider is an optional Host capability for the details overlay.
 type DetailsProvider interface {
 	Details() Details
+}
+
+// PromptView is the system prompt recorded for the active session. Bytes is the
+// UTF-8 length of Text before display sanitization: the recorded length, or the
+// rebuilt length for a reconstruction. Text is empty only when the host could
+// not produce it. Reconstructed reports text rebuilt from the prompt version
+// because the log predates the recorded prompt, and Capped reports that the SDK
+// truncated the recorded prompt at its byte cap.
+type PromptView struct {
+	Text          string
+	Version       string
+	Tag           string
+	Bytes         int
+	Reconstructed bool
+	Capped        bool
+}
+
+// PromptProvider is an optional Host capability for /prompt. A reconstruction
+// failure returns the version in the view together with a wrapped error, so the
+// overlay can name what could not be rendered.
+type PromptProvider interface {
+	Prompt() (PromptView, error)
+}
+
+// ExchangeView is the latest projected model attempt in the active session:
+// the newest recorded request or response, whichever came later, plus its pair.
+// Payloads are the host's pretty-printed recorded JSON. The Has flags separate
+// "not recorded" from an empty payload, and LogRequests is the effective
+// setting used by the hint when a response has no request.
+type ExchangeView struct {
+	Request     string
+	Response    string
+	RequestSeq  uint64
+	ResponseSeq uint64
+	Run         int
+	Turn        int
+	HasRequest  bool
+	HasResponse bool
+	LogRequests bool
+}
+
+// ExchangeProvider is an optional Host capability for /request.
+type ExchangeProvider interface {
+	Exchange() (ExchangeView, error)
 }
 
 // TerminalInfo describes the terminal capabilities surfaced by the details

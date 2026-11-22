@@ -52,8 +52,8 @@ github.com/clipperhouse/uax29/v2 v2.7.0 h1:+gs4oBZ2gPfVrKPthwbMzWZDaAFPGYK72F0NJ
 github.com/clipperhouse/uax29/v2 v2.7.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJSwu5BF98AuoVM=
 github.com/dlclark/regexp2 v1.11.0 h1:G/nrcoOa7ZXlpoa/91N3X7mM3r8eIlMBBJZvsz/mxKI=
 github.com/dlclark/regexp2 v1.11.0/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
-github.com/eddiectc/aharness v0.4.1 h1:FuICbwZChwuI0huwNFAFoThqXwNLa7XB37kq8XZArmY=
-github.com/eddiectc/aharness v0.4.1/go.mod h1:7tQeR1nmArIrlbcb5YA3wPyEqNP6I3hWp+7JvpZOl/M=
+github.com/eddiectc/aharness v0.5.0 h1:8EK1/TOCjhmZY8YxA0TXyEh4iruHiqILIJ4ZqvV6Hog=
+github.com/eddiectc/aharness v0.5.0/go.mod h1:7tQeR1nmArIrlbcb5YA3wPyEqNP6I3hWp+7JvpZOl/M=
 github.com/forPelevin/gomoji v1.4.1 h1:7U+Bl8o6RV/dOQz7coQFWj/jX6Ram6/cWFOuFDEPEUo=
 github.com/forPelevin/gomoji v1.4.1/go.mod h1:mM6GtmCgpoQP2usDArc6GjbXrti5+FffolyQfGgPboQ=
 github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c h1:wpkoddUomPfHiOziHZixGO5ZBS73cKqVzZipfrLmO1w=

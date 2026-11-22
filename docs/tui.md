@@ -118,7 +118,9 @@ completes, `Enter` runs the highlighted command, and `Esc` dismisses. Command
 names are case-insensitive; a space starts argument mode; unknown `/text` is
 sent as a normal message, and `-task`/`-task-file` text is always literal.
 While a run is active, commands still work, but actions that only affect the
-next run and session switching are disabled with a notice. `/new` starts a
+next run and session switching are disabled with a notice. `/prompt` and
+`/request` are display-only and work idle or during a run: `Up`/`Down`,
+`PgUp`/`PgDn`, and the wheel scroll them, and `Esc` closes them. `/new` starts a
 fresh session in the current workspace; `/resume` opens a picker of previous
 sessions recorded for the same workspace, excluding the active one. The full
 reference — syntax, arguments, key equivalents, idle/active behavior,
@@ -479,8 +481,10 @@ Output lines:
   (coalesced `row`, `col`, `width`, `text`, `fg`, `bg`, `attrs`), `images`
   (`id`, `path`, `alt`, `row`, `col`, `width`, `height`, `protocol`),
   `color_profile`, `no_color`, `image_protocol`, `styles_truncated`. `overlay`
-  is `none`, `help`, `details`, `table`, `file`, `model`, `effort`, `session`,
-  `image`, `agent-hub`, `agents`, or `settings`. Frames contain no ANSI and no
+  is `none`, `help`, `details`, `prompt`, `request`, `table`, `file`, `model`,
+  `effort`, `session`, `image`, `agent-hub`, `agents`, or `settings`. The list
+  is additive: a client must treat an unknown overlay string as opaque rather
+  than as a protocol error. Frames contain no ANSI and no
   raw image bytes.
 - `event`: `run_started`, `run_finished`, `tool_started`, `tool_finished`,
   `model_changed`, `notice`, `error`, with the fields described in this
@@ -541,6 +545,8 @@ header.
 | File picker entries / filter | 2,000 per directory / 64 bytes | No recursion, no file contents; `.git`, symlinks, control-character names, and escapes are rejected. |
 | Resume picker sessions / head | 100 per workspace / 64 events | Same canonical workspace only; the active session is excluded; unreadable or corrupt logs are skipped; the first-message preview is sanitized and cut to 160 bytes. |
 | Overlay stack | 4 | Deeper requests close the oldest overlay. |
+| System prompt view | SDK-recorded prompt, whole | `/prompt` shows the recorded text and reports when the SDK's record cap truncated it; long lines wrap. |
+| Model exchange view | 32 KiB head + 32 KiB tail per payload | `/request` marks the omitted bytes of the displayed payload; long lines wrap. The log keeps the full event. |
 | Agent roster | 8 rows, 200-byte intent | Header and `+N more` row; scrolls; every string sanitized. |
 | Agent settings editor | 200 bytes | One inline routing value; longer input is refused with a footer error, and an empty value clears the override. |
 | Config settings editor | 512 bytes | One config-file value; longer input is refused, values use the startup validation rules, and `web_fetch_key` is masked and never rendered. |
@@ -599,9 +605,9 @@ not hover; clicks, releases, and motion are ignored. The wheel scrolls the
 transcript by three lines per notch, so `PgUp`/`PgDn` remain the keyboard
 equivalent. Scrolling up detaches the live tail and scrolling back to the bottom
 re-attaches it. With an overlay open the wheel scrolls that overlay instead: the
-help and details panels scroll their text, the table moves its row cursor, and
-the file/model/effort pickers move their selection. Horizontal wheel events do
-nothing. Terminal focus reporting stays disabled.
+help, details, prompt, and request panels scroll their text, the table moves its
+row cursor, and the file/model/effort pickers move their selection. Horizontal
+wheel events do nothing. Terminal focus reporting stays disabled.
 
 No terminal mouse mode reports only the wheel, so enabling the wheel stops the
 terminal from selecting text and handling middle-click paste itself. The
