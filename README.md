@@ -344,7 +344,8 @@ out of git and out of the tracked stack files
 
 The published image carries no GitHub CLI or compiler.
 [compose/Dockerfile](compose/Dockerfile) is the stack image: a `golang` base with
-the released binary copied in, `gh` installed from its release `.deb`, and a
+the released binary copied in, `gh` installed from its release `.deb`,
+`golangci-lint` and `govulncheck` installed at the versions CI pins, and a
 `github.com` credential helper in `/etc/gitconfig`, so an `https` push
 authenticates through the same login. Another language copies it and changes the
 base ([container.md §6](docs/container.md#6-building-the-image)).

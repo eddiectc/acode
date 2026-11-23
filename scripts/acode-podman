@@ -10,9 +10,9 @@
 #
 # ACODE_WORKSPACE pins a project other than $PWD. ACODE_BUILD=1 forces a rebuild;
 # otherwise a missing stack image is built. The stack image carries the Go
-# toolchain and gh, and a compose.local.yaml replaces it for another language.
-# That override is passed last, so a machine-local credential or image wins and
-# stays out of git; docs/container.md sections 5 and 6.
+# toolchain, gh, and the check tools, and a compose.local.yaml replaces it for
+# another language. That override is passed last, so a machine-local credential
+# or image wins and stays out of git; docs/container.md sections 5 and 6.
 set -eu
 
 STACK_DIR="${ACODE_STACK_DIR:-$(cd -- "$(dirname -- "$0")/.." && pwd -P)}"

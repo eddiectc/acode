@@ -44,9 +44,10 @@ cd ~/src/project
 
 Every port is published on `127.0.0.1` only, and each port variable moves the
 listener, the healthcheck, and the URL acode uses together. The stack image adds
-the Go toolchain and gh, so `go build`, `go test`, and a push work on the
-workspace; it is built on first run. It also mounts the credentials of §5,
-always and read-only, and a machine without them still runs.
+the Go toolchain, gh, and `golangci-lint` and `govulncheck` at the versions
+[ci.yml](../.github/workflows/ci.yml) pins, so `go build`, `go test`, `make dod`,
+and a push work on the workspace; it is built on first run. It also mounts the
+credentials of §5, always and read-only, and a machine without them still runs.
 
 | Variable | Set in | Effect |
 |---|---|---|
@@ -329,9 +330,11 @@ build -trimpath -ldflags "-X main.version=vX.Y.Z" -o dist/linux/<arch>/acode
 ### Adding a toolchain
 
 The stack image, [`compose/Dockerfile`](../compose/Dockerfile), is a `golang`
-base with the released binary copied in and gh added, so the agent can build,
-test, and push the workspace. The published image stays toolchain-free: it is
-what runs elsewhere, and one language's compiler is dead weight there.
+base with the released binary copied in, gh, `golangci-lint`, and `govulncheck`
+added, so the agent can build, test, `make dod`, and push the workspace. Both
+check tools are pinned by build argument to the versions `ci.yml` installs. The
+published image stays toolchain-free: it is what runs elsewhere, and one
+language's compiler is dead weight there.
 
 Another language copies that file and changes the base — `rust:1.100-trixie`,
 `node:24-trixie`, anything with `/bin/sh` — and selects it per machine in
@@ -380,7 +383,9 @@ tag or digest. Windows is not built: `/bin/sh`, the manual PTY smoke, and
 Checked: the base image tags resolve; UID and GID 1000 are free in
 `debian:trixie-slim`; `CGO_ENABLED=0` yields a static binary; the Dockerfile is
 clean under `hadolint` 2.12.0 and both workflows parse under `actionlint`;
-`make dist` plus the §7 packaging loop produced a matching `SHA256SUMS`.
+`make dist` plus the §7 packaging loop produced a matching `SHA256SUMS`. The
+`golangci-lint` and `govulncheck` pins install and run under the stack image's Go
+1.27.4, and `make dod` passes with them.
 
 For §1, both engines resolve `compose.yaml` alone and merged with
 `compose.podman.yaml`, the launchers' argv was accepted by the real parsers, and
@@ -401,9 +406,10 @@ Not verified: a `docker build` and `docker run` (the run above was rootless
 Podman); a TUI session against a real terminal; a real-provider run through the
 gateway; one end-to-end `release.yml` run on GitHub. The current
 `compose/Dockerfile` has not been built — its `FROM`, its `USER` switch, the gh
-`.deb` fetch and checksum, a multi-arch build, and `hadolint` are open. The
-launchers create the credential paths and read the `image:` and whether a
-`build:` exists from the merged config, which was checked against recorded
+`.deb` fetch and checksum, the `go install` of the check tools, and a multi-arch
+build are open, and `hadolint` 2.12.0 reports one DL3003 warning on the gh step's
+`cd`. The launchers create the credential paths and read the `image:` and whether
+a `build:` exists from the merged config, which was checked against recorded
 `compose config` output rather than a live engine. The `setns()`/`CAP_SYS_ADMIN`
 explanation is reasoned, not observed, and so is whether host networking clears
 the `conmon bytes ""` create failure. From inside the stack, acode reaching the
