@@ -341,6 +341,24 @@ func TestSettingsOverlayValidationKeepsEditor(t *testing.T) {
 	}
 }
 
+func TestSettingsOverlayKeepsOneWidthWhileNavigating(t *testing.T) {
+	host := newUISettingsHost()
+	app := newTestApp(t, host)
+	app.setSize(120, 40)
+	submitComposer(t, app, "/settings")
+	innerW, _ := boxInner(app.width, app.height)
+	// The rendered box adds a border cell and a padding cell per side.
+	want := innerW + 4
+	for row := range len(host.fields) {
+		for i, line := range strings.Split(app.overlay.view(app), "\n") {
+			if width := ansi.StringWidth(line); width != want {
+				t.Fatalf("row %d: overlay line %d is %d cells, want %d: %q", row, i, width, want, line)
+			}
+		}
+		press(t, app, "down")
+	}
+}
+
 func TestSettingsOverlayScrollsToCursor(t *testing.T) {
 	host := newUISettingsHost()
 	for i := range 30 {

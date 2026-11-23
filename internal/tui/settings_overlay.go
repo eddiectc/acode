@@ -535,5 +535,11 @@ func (s *settingsOverlay) viewText(m *App) string {
 			s.width, "…"))
 	}
 	lines = append(lines, s.footer()...)
+	// The border is sized by the widest line, and the footer's selected-row
+	// detail changes length with the cursor. Pad every line to the box interior
+	// so navigating never resizes or re-centers the overlay.
+	for i, line := range lines {
+		lines[i] = padCell(line, s.width)
+	}
 	return strings.Join(lines, "\n")
 }
