@@ -9,9 +9,9 @@
 services:
   acode:
     # The stack builds compose/Dockerfile: a Go toolchain, the released binary,
-    # and gh. A workspace in another language copies that file, changes the
-    # base, and points this at the copy. The tracked image: has to be replaced
-    # too, or the build lands on the stack's own tag.
+    # gh, and the pinned check tools. A workspace in another language copies
+    # that file, changes the base, and points this at the copy. The tracked
+    # image: has to be replaced too, or the build lands on the stack's own tag.
     #
     # build:
     #   context: ${ACODE_STACK_DIR:-.}

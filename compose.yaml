@@ -6,9 +6,10 @@ name: acode-stack
 
 services:
   acode:
-    # The stack image: a Go toolchain, the released binary, and gh, so `go build`,
-    # `go test`, and a push work on the workspace (docs/container.md section 6).
-    # Another language copies compose/Dockerfile and points `dockerfile:` at it.
+    # The stack image: a Go toolchain, the released binary, gh, and the pinned
+    # check tools, so `go build`, `go test`, `make dod`, and a push work on the
+    # workspace (docs/container.md section 6). Another language copies
+    # compose/Dockerfile and points `dockerfile:` at it.
     build:
       context: .
       dockerfile: compose/Dockerfile
