@@ -12,7 +12,7 @@ require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20261023060817-a45b7c86333f
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/vt v0.1.0
-	github.com/eddiectc/aharness v0.5.0
+	github.com/eddiectc/aharness v0.6.0
 	golang.org/x/term v0.48.0
 )
 
