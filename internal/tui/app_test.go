@@ -33,6 +33,7 @@ type manualHost struct {
 	mu    sync.Mutex
 	run   *manualRun
 	calls []startCall
+	child func(ChildEvent) error
 }
 
 type steerCall struct {
@@ -85,6 +86,17 @@ func (h *manualHost) SubagentHistory(sessionID string) ([]agent.HistoryItem, err
 }
 
 func (h *manualHost) Start(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (Run, error) {
+	return h.start(sub, opts, steer, display, nil)
+}
+
+// StartObserved records the live child callback and starts the run. Every test
+// host that embeds manualHost gains the capability; the other fake hosts stay
+// Start-only to pin the snapshot fallback.
+func (h *manualHost) StartObserved(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error, child func(ChildEvent) error) (Run, error) {
+	return h.start(sub, opts, steer, display, child)
+}
+
+func (h *manualHost) start(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error, child func(ChildEvent) error) (Run, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.startErr != nil {
@@ -92,8 +104,17 @@ func (h *manualHost) Start(sub Submission, opts RunOptions, steer <-chan agent.S
 	}
 	run := &manualRun{done: make(chan agent.Result, 1)}
 	h.run = run
+	h.child = child
 	h.calls = append(h.calls, startCall{sub: sub, opts: opts, steer: steer, display: display})
 	return run, nil
+}
+
+// childCallback returns the live child callback the app installed, or nil for
+// a start that passed none.
+func (h *manualHost) childCallback() func(ChildEvent) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.child
 }
 
 func (h *manualHost) last() (*manualRun, startCall, bool) {
@@ -389,7 +410,7 @@ func TestDisplayDrainsAfterRunReturns(t *testing.T) {
 				t.Fatalf("display channel was closed: %v", recovered)
 			}
 		}()
-		app.run.events <- agent.Notice{Kind: agent.NoticeWarning, Text: "still open"}
+		app.run.events <- displayMsg{ev: agent.Notice{Kind: agent.NoticeWarning, Text: "still open"}}
 	}()
 }
 
@@ -604,7 +625,7 @@ func press(t *testing.T, app *App, name string) tea.Cmd {
 }
 
 func deliver(app *App, ev agent.DisplayEvent) {
-	_ = app.handleDisplay(ev)
+	_ = app.handleDisplay(displayMsg{ev: ev})
 }
 
 func typeText(t *testing.T, app *App, text string) {

@@ -726,8 +726,22 @@ func resolveRunThinkingEffort(sel *runSelection, catalog map[string]model.Catalo
 // Start launches one run and returns its handle. The app supplies the display
 // callback and steering channel; the host owns the goroutine and cleanup. The
 // engine builds the registry, spawner, grant, todo seed, and work directories
-// from the session contract plus this run's selection.
+// from the session contract plus this run's selection. A run started through
+// Start leaves delegated children unobserved.
 func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error) (tui.Run, error) {
+	return h.start(sub, opts, steer, display, nil)
+}
+
+// StartObserved launches one run with a live sink for each delegated child. A
+// nil child callback leaves the children unobserved, exactly like Start.
+// Registering the sink makes every child stream, which turns a transport
+// failure after its first text delta terminal instead of retried; see the
+// agent.SpawnerOptions.Observe contract. Only the TUI pays that trade.
+func (h *tuiHost) StartObserved(sub tui.Submission, opts tui.RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error, child func(tui.ChildEvent) error) (tui.Run, error) {
+	return h.start(sub, opts, steer, display, child)
+}
+
+func (h *tuiHost) start(sub tui.Submission, opts tui.RunOptions, steer <-chan agent.SteeringLine, display func(agent.DisplayEvent) error, child func(tui.ChildEvent) error) (tui.Run, error) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -758,6 +772,22 @@ func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan ag
 			return display(ev)
 		}
 	}
+	// The sink runs on the child's own goroutine while the run is active. A
+	// cancelled run must release it without failing the child, so cancellation
+	// returns nil rather than an error.
+	var observeChild func(agent.ChildObservation) agent.ChildSink
+	if child != nil {
+		observeChild = func(obs agent.ChildObservation) agent.ChildSink {
+			return func(ev agent.DisplayEvent) error {
+				select {
+				case <-runCtx.Done():
+					return nil
+				default:
+				}
+				return child(tui.ChildEvent{Child: obs, Event: ev})
+			}
+		}
+	}
 	runner, spawner, err := h.host.BuildRunnerWithSpawner(engine.RunSpec{
 		Model:          sel.model,
 		Dialect:        string(sel.dialect),
@@ -765,6 +795,7 @@ func (h *tuiHost) Start(sub tui.Submission, opts tui.RunOptions, steer <-chan ag
 		Limits:         sel.limits,
 		Pricing:        sel.pricing,
 		ThinkingEffort: sel.effortOption(),
+		ObserveChild:   observeChild,
 		Stream:         true,
 		Interactive:    false,
 		NewCompleter: func(dialect model.Dialect, baseURL, sessionID string) model.Completer {

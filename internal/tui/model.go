@@ -148,8 +148,10 @@ type liveRun struct {
 	draining      bool
 	readPending   bool
 	doneResult    *agent.Result
-	events        chan agent.DisplayEvent
-	stop          chan struct{}
+	// events carries both the parent display stream and stamped delegated-child
+	// events on one channel, so arrival order is the view's order.
+	events chan displayMsg
+	stop   chan struct{}
 }
 
 // App is the Bubble Tea model for one TUI session.

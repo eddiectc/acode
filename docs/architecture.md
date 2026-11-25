@@ -234,7 +234,8 @@ split by feature so the app can omit one:
 | `PromptProvider` | The recorded system prompt for `/prompt`. |
 | `ExchangeProvider` | The latest projected model attempt for `/request`. |
 | Agent browser | Definition overrides and enable/disable state. |
-| Child view | Focused child history, steering, and status. |
+| `SubagentFocus` | Focused child history, steering, and status. |
+| `ChildObserver` | Live per-child display events for the focused view. |
 
 `PromptProvider` and `ExchangeProvider` are optional: a host that omits one
 makes its command report that the view is unavailable. The app reads the active
@@ -243,9 +244,15 @@ SDK for the prompt (`agent.Inspect`) and the latest attempt
 (`agent.LatestModelExchange`). The app formats and displays the result; it never
 pairs model events or decodes `session_start` itself.
 
-`agent.Config.Display` is the single runner-to-UI path. Events are display-only
-and carry no durable truth. `agent.History` reconstructs the transcript from the
-log; the TUI uses it for the active session and for a focused child log read
+The runner has two display paths, and every event on both is display-only and
+carries no durable truth. `agent.Config.Display` is the parent stream.
+`engine.RunSpec.ObserveChild` is the optional second path: it registers one sink
+per delegated child, and the event is stamped with the child identity the
+delta events do not carry, so a host can keep child text out of the parent
+transcript. The TUI host sets the sink for TUI runs only, forwards both streams
+into one frame channel, and renders the focused child. `agent.History`
+reconstructs the transcript from the log; the TUI uses it for the active
+session and as the canonical replacement for a focused child's live list, read
 without taking the child's lock.
 
 ## 6. Sessions and state

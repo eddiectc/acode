@@ -299,6 +299,21 @@ type SubagentFocus interface {
 	SubagentHistory(sessionID string) ([]agent.HistoryItem, error)
 }
 
+// ChildEvent is one delegated child's display event, stamped with the child
+// identity the SDK's delta events do not carry.
+type ChildEvent struct {
+	Child agent.ChildObservation
+	Event agent.DisplayEvent
+}
+
+// ChildObserver is an optional Host capability for live delegated-child
+// events. A host that omits it keeps the snapshot-only child view; a host that
+// implements it with a nil child callback leaves the run unobserved.
+type ChildObserver interface {
+	StartObserved(sub Submission, opts RunOptions, steer <-chan agent.SteeringLine,
+		display func(agent.DisplayEvent) error, child func(ChildEvent) error) (Run, error)
+}
+
 // Details is optional host metadata for the details overlay.
 type Details struct {
 	TracePath        string
@@ -452,6 +467,14 @@ type (
 	}
 )
 
+// displayMsg is one item on the active run's display channel. child is nil for
+// the parent stream; otherwise it is the delegated child the event belongs to,
+// because agent.TextDelta and agent.ReasoningDelta carry no identity.
+type displayMsg struct {
+	ev    agent.DisplayEvent
+	child *agent.ChildObservation
+}
+
 // Messages used by the headless driver.
 type (
 	inputTextMsg         struct{ text string }
@@ -464,7 +487,7 @@ type (
 	seedMsg              struct{}
 	displayEventMsg      struct {
 		run int
-		ev  agent.DisplayEvent
+		msg displayMsg
 	}
 	displayClosedMsg struct{}
 	modelRefreshMsg  struct {
@@ -588,7 +611,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.run.readPending = false
-		return m, m.handleDisplay(msg.ev)
+		return m, m.handleDisplay(msg.msg)
 	case displayClosedMsg:
 		m.run.readPending = false
 		if m.run.draining {
@@ -606,6 +629,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case coalesceMsg:
 		m.coalesceScheduled = false
 		m.ensureContent()
+		m.rebuildChildFocusIfDirty()
 		return m, nil
 	case tickMsg:
 		if m.headless || !m.run.active {
@@ -1064,22 +1088,44 @@ func (m *App) startRun(text, source string) tea.Cmd {
 	m.notice = ""
 	m.historyIndex = len(m.inputHistory)
 
-	events := make(chan agent.DisplayEvent, 256)
+	events := make(chan displayMsg, 256)
 	steer := make(chan agent.SteeringLine, 64)
 	stop := make(chan struct{})
-	display := func(ev agent.DisplayEvent) error {
+	// A stopping run releases the producer without buffering a late event. The
+	// blocking select below cannot prioritize two ready cases, so check stop
+	// first. The channel is never closed: the host owns its lifetime.
+	enqueue := func(msg displayMsg) error {
 		select {
-		case events <- ev:
-			return nil
 		case <-stop:
 			return nil
+		default:
 		}
+		select {
+		case events <- msg:
+		case <-stop:
+		}
+		return nil
 	}
-	run, err := m.host.Start(Submission{Text: text, Source: source}, RunOptions{
+	display := func(ev agent.DisplayEvent) error {
+		return enqueue(displayMsg{ev: ev})
+	}
+	child := func(ce ChildEvent) error {
+		obs := ce.Child
+		return enqueue(displayMsg{ev: ce.Event, child: &obs})
+	}
+	opts := RunOptions{
 		Model:             m.nextModel,
 		ThinkingEffort:    m.nextEffort,
 		ThinkingEffortSet: true,
-	}, steer, display)
+	}
+	sub := Submission{Text: text, Source: source}
+	var run Run
+	var err error
+	if observer, ok := m.host.(ChildObserver); ok {
+		run, err = observer.StartObserved(sub, opts, steer, display, child)
+	} else {
+		run, err = m.host.Start(sub, opts, steer, display)
+	}
 	if err != nil {
 		close(stop)
 		m.removeItem(userItem)
@@ -1126,19 +1172,19 @@ func (m *App) waitDisplayCmd() tea.Cmd {
 		if stop == nil {
 			// A run without a stop channel is only the fake-host test path; a
 			// real run always has one so the host can abort a blocked read.
-			return displayEventMsg{run: runNo, ev: <-ch}
+			return displayEventMsg{run: runNo, msg: <-ch}
 		}
 		select {
-		case ev := <-ch:
-			return displayEventMsg{run: runNo, ev: ev}
+		case msg := <-ch:
+			return displayEventMsg{run: runNo, msg: msg}
 		case <-stop:
 			// The runner has returned. Stop and a buffered event can both be
 			// ready, and select picks at random, so take one more event before
 			// declaring the run drained. The deferred drain continues from
 			// here; an empty buffer is the only proof there is nothing left.
 			select {
-			case ev := <-ch:
-				return displayEventMsg{run: runNo, ev: ev}
+			case msg := <-ch:
+				return displayEventMsg{run: runNo, msg: msg}
 			default:
 				return displayClosedMsg{}
 			}
@@ -1157,8 +1203,8 @@ func (m *App) drainDisplayCmd() tea.Cmd {
 	runNo := m.run.number
 	return func() tea.Msg {
 		select {
-		case ev := <-ch:
-			return displayEventMsg{run: runNo, ev: ev}
+		case msg := <-ch:
+			return displayEventMsg{run: runNo, msg: msg}
 		default:
 			return displayClosedMsg{}
 		}
@@ -1175,7 +1221,11 @@ func (m *App) waitDoneCmd(run Run) tea.Cmd {
 	}
 }
 
-func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
+func (m *App) handleDisplay(msg displayMsg) tea.Cmd {
+	if msg.child != nil {
+		return m.handleChildDisplay(*msg.child, msg.ev)
+	}
+	ev := msg.ev
 	if ev == nil {
 		return m.nextDisplayCmd()
 	}
@@ -1407,6 +1457,9 @@ func (m *App) handleDisplay(ev agent.DisplayEvent) tea.Cmd {
 		if f := m.childFocus; f != nil && f.session == ev.Session {
 			f.status = SanitizeLine(ev.Status)
 			f.readOnly = true
+			// A queued line cannot be consumed by a finished child, even when
+			// the canonical snapshot read fails below.
+			f.pending = nil
 		}
 		m.refreshChildFocus(ev.Session)
 		m.ensureContent()
