@@ -70,6 +70,9 @@ func TestBatchRootGrantExcludesDelegate(t *testing.T) {
 	if len(root) != len(tools.NamesWithout(tools.NameDelegate)) {
 		t.Fatalf("batch root grant = %v, want every current tool except delegate", root)
 	}
+	if !slices.Contains(root, tools.NameReadImage) {
+		t.Fatalf("batch root grant = %v, want read_image", root)
+	}
 
 	// A resumed old session keeps its frozen schema set; a current-only name
 	// must not leak into its root grant.

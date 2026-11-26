@@ -94,7 +94,7 @@ than a guess.
 		},
 		"task": {
 			description: "Self-contained multi-step work needing reads, edits, and commands: the fallback when no narrower role fits. It can do everything except delegate.",
-			tools:       []string{"read_file", "edit_file", "search", "run_command", "web_search", "web_fetch", "todo"},
+			tools:       []string{"read_file", "edit_file", "search", "run_command", "web_search", "web_fetch", "todo", "read_image"},
 			body: `Carry out the assigned task end to end. Read before editing, keep changes
 minimal, and run the relevant tests. When the spec is ambiguous, follow the
 most reasonable interpretation and record the choice in your report rather

@@ -22,6 +22,7 @@ type fakeCatalogModel struct {
 	Output     int
 	Status     string
 	ToolCall   bool
+	Image      bool     // attachment plus an image input modality
 	OutputMods []string // defaults to ["text"]
 	Type       string
 	Reasoning  bool
@@ -50,8 +51,12 @@ func defaultFakeCatalogModels() map[string]fakeCatalogModel {
 	noTools.ToolCall = false
 	noContext := testCatalogModel("No Context", "@ai-sdk/openai", 0, 0, 8_192)
 	unsupported := testCatalogModel("Exotic SDK", "@ai-sdk/cohere", 100_000, 0, 8_192)
+	// The real catalog entry advertises attachment and image input; every other
+	// fixture model is text-only, which is what read_image's gate keys on.
+	vision := testCatalogModel("DeepSeek V4.1 Flash", "", 1_000_000, 0, 384_000)
+	vision.Image = true
 	return map[string]fakeCatalogModel{
-		"deepseek-v4.1-flash":        testCatalogModel("DeepSeek V4.1 Flash", "", 1_000_000, 0, 384_000),
+		"deepseek-v4.1-flash":        vision,
 		"gpt-6-luna":                 testCatalogModel("GPT-6 Luna", "@ai-sdk/openai", 1_050_000, 922_000, 128_000),
 		"kimi-k2.7-code":             testCatalogModel("Kimi K2.7 Code", "@ai-sdk/openai-compatible", 262_144, 0, 262_144),
 		"qwen3.7-plus":               testCatalogModel("Qwen3.7 Plus", "@ai-sdk/anthropic", 131_072, 0, 8_192),
@@ -88,6 +93,13 @@ func catalogPayload(models map[string]fakeCatalogModel) []byte {
 			"tool_call":  m.ToolCall,
 			"limit":      limit,
 			"modalities": map[string]any{"output": outputMods},
+		}
+		if m.Image {
+			entry["attachment"] = true
+			entry["modalities"] = map[string]any{
+				"input":  []string{"text", "image"},
+				"output": outputMods,
+			}
 		}
 		if m.SDK != "" {
 			entry["provider"] = map[string]any{"npm": m.SDK}

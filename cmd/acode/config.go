@@ -88,7 +88,11 @@ type config struct {
 	ThinkingEffort string
 	// InputLimit is the catalog's optional input ceiling for the selected
 	// model. Zero means the context window minus the safety margin applies.
-	InputLimit     int
+	InputLimit int
+	// ImageInput is the selected model's catalog image capability. Nil means
+	// unknown, which is what a resume or fork without an explicit model
+	// inherits: read_image then runs and the provider decides.
+	ImageInput     *bool
 	Limits         agent.Limits
 	SessionTimeout time.Duration
 	ModelTimeout   time.Duration

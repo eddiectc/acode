@@ -252,7 +252,8 @@ invariant; changing one changes what the harness means, not how it is deployed:
   8 MiB, assembled response 1 MiB. A larger response is a protocol error, and
   the parser, not a knob, owns that boundary.
 - Tool result caps (`read_file` 60 KiB / 2,000 lines, `search` 60 KiB / 200
-  results, `run_command` 64 KiB) and the `run_command` 120s default with its
+  results, `run_command` 64 KiB, `read_image` 2 MiB / 16 megapixels per source
+  and 2048 px / 512 KiB delivered) and the `run_command` 120s default with its
   600s ceiling. These shape the model-visible transcript; an operator-tunable
   transcript cap would change replay semantics.
 - `web_search` response 2 MiB, results default 5 / max 10, output 60 KiB,

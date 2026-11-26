@@ -175,13 +175,15 @@ tier 1, and `Spec.UserAgent` is the acode user agent.
 
 `Host.Start` builds each run with `Host.BuildRunnerWithSpawner` and an
 `engine.RunSpec` carrying the per-run model choice: model, dialect, base URL,
-limits, pricing, and thinking effort. That choice lives in `runSelection`; the
-model picker and a next-run effort change it and the header context limit, never
-the session contract. The engine builds the registry, spawner, root grant, todo
-seed, and work directories for the run. A session first created by batch records
-a full session grant and a root grant without `delegate`, so a TUI resume of it
-cannot delegate; a TUI-created session records no root grant and stays
-delegating.
+limits, pricing, thinking effort, and that model's image capability. That choice
+lives in `runSelection`, captured when the run starts; the model picker and a
+next-run effort change it and the header context limit, never the session
+contract. A delegated child resolves its model against the run's captured
+values, so a selection change never reaches the run it did not start. The engine
+builds the registry, spawner, root grant, todo seed, and work directories for
+the run. A session first created by batch records a full session grant and a
+root grant without `delegate`, so a TUI resume of it cannot delegate; a
+TUI-created session records no root grant and stays delegating.
 
 While a run is active, the composer becomes a steering input; `Esc` interrupts
 the in-flight model or tool operation and a second `Ctrl-C` cancels the run. The
