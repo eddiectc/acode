@@ -86,6 +86,19 @@ The TUI shows the checklist in a persistent panel above the composer. Tool
 calls show their `intent` as the block title, and delegated work gets a
 foldable block per call.
 
+The `read_image` tool returns one workspace PNG, JPEG, or GIF to the model as
+an image, so a vision model can read a screenshot, diagram, or UI mockup
+instead of only its path. The SDK sniffs the type from the bytes, caps a source
+at 2 MiB and 16 megapixels, and delivers at most 2048 px on its longest edge
+and 512 KiB; the tool block shows the one-line caption the model receives.
+Image contents are untrusted data. A model whose catalog entry declares no
+image input returns `unavailable` without reading the file. The check follows
+the model chosen for each run, so a picker switch takes effect on the very next
+run; a resumed or forked session that inherits its model leaves the capability
+unknown and lets the provider decide. A catalog cached before it recorded image
+capabilities reads every model as text-only, so refresh it with
+`-refresh-models` after upgrading.
+
 The composer is multi-line: `Enter` submits, `Shift-Enter` or `Alt-Enter`
 inserts a newline, and `F4` edits the draft in `$VISUAL` or `$EDITOR`. While a
 run is active, `Enter` submits steering for the running agent, `Esc` interrupts
@@ -159,8 +172,8 @@ Five agents ship with acode: `explore`, `researcher`, `reviewer`,
 `implementer`, and `task`. Files in `<state-dir>/agents/*.md` override them by
 exact name; an override uses a strict `key: value` header and a Markdown prompt
 body. A call runs concurrently (up to four) when every task's grant is limited
-to `read_file`, `search`, `web_search`, and `web_fetch`; any write-capable task
-forces the whole call to run sequentially.
+to `read_file`, `read_image`, `search`, `web_search`, and `web_fetch`; any
+write-capable task forces the whole call to run sequentially.
 
 The TUI renders one foldable block per delegated call. `/agent-hub` shows a
 live roster of running children with agent, intent, model, effort, elapsed,

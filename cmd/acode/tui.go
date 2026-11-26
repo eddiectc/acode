@@ -189,9 +189,11 @@ func (h *tuiHost) SelectModel(id string) (tui.ModelChoice, error) {
 	h.pendingWarning = ""
 	if id == h.next.model {
 		// Keep the recorded fallback's exact limits, but prefer loaded catalog
-		// metadata so a re-selection still carries the advertised efforts.
+		// metadata so a re-selection still carries the advertised efforts and
+		// the definite image capability the catalog now knows.
 		if m, ok := h.catalog.Models[id]; ok && m.Validate() == nil {
 			h.next.pricing = catalogPrice(h.catalog, id)
+			h.next.imageInput = boolPtr(m.ImageInput)
 			return modelChoice(m), nil
 		}
 		return h.recordedChoiceLocked(true), nil
@@ -212,12 +214,13 @@ func (h *tuiHost) SelectModel(id string) (tui.ModelChoice, error) {
 		return tui.ModelChoice{}, err
 	}
 	h.next = runSelection{
-		model:   cfg.Model,
-		dialect: cfg.Dialect,
-		baseURL: cfg.BaseURL,
-		limits:  cfg.Limits,
-		pricing: cfg.Pricing,
-		effort:  h.next.effort,
+		model:      cfg.Model,
+		dialect:    cfg.Dialect,
+		baseURL:    cfg.BaseURL,
+		limits:     cfg.Limits,
+		pricing:    cfg.Pricing,
+		effort:     h.next.effort,
+		imageInput: cfg.ImageInput,
 	}
 	h.info.ContextLimit = cfg.Limits.MaxContextTokens
 	return modelChoice(m), nil
@@ -485,11 +488,23 @@ func firstLine(text string) string {
 	return ""
 }
 
+// runModelResolver binds the model resolver to one run's selection. Start
+// captures the selection before the run, so a selection change made while that
+// run is active cannot reach its children: a child resolves against the run it
+// belongs to, not against whatever the host would run next.
+func (h *tuiHost) runModelResolver(sel runSelection) func(modelID, effort string) (agent.ModelResolution, error) {
+	return func(modelID, effort string) (agent.ModelResolution, error) {
+		return h.resolveAgentModel(sel, modelID, effort)
+	}
+}
+
 // resolveAgentModel resolves an agent's model and effort through the loaded
-// catalog without mutating the host configuration. A child that inherits the
-// run's model gets the run selection's recorded values, so an offline resume
-// stays usable and a switched base URL reaches the child.
-func (h *tuiHost) resolveAgentModel(modelID, effort string) (agent.ModelResolution, error) {
+// catalog without mutating the host configuration, against the run selection
+// it is given. A child that inherits the run's model gets that selection's
+// recorded values, so an offline resume stays usable, a switched base URL
+// reaches the child, and the child's read_image gate matches the parent run's.
+// A child on its own model follows that model's catalog entry.
+func (h *tuiHost) resolveAgentModel(sel runSelection, modelID, effort string) (agent.ModelResolution, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
@@ -497,12 +512,13 @@ func (h *tuiHost) resolveAgentModel(modelID, effort string) (agent.ModelResoluti
 	}
 	m, ok := h.catalog.Models[modelID]
 	if !ok {
-		if modelID == h.next.model {
+		if modelID == sel.model {
 			return agent.ModelResolution{
-				Dialect: string(h.next.dialect),
-				BaseURL: h.next.baseURL,
-				Limits:  h.next.limits,
-				Pricing: h.next.pricing,
+				Dialect:    string(sel.dialect),
+				BaseURL:    sel.baseURL,
+				Limits:     sel.limits,
+				Pricing:    sel.pricing,
+				ImageInput: sel.imageInput,
 			}, nil
 		}
 		return agent.ModelResolution{}, fmt.Errorf("model %q is not in the loaded catalog", modelID)
@@ -522,11 +538,19 @@ func (h *tuiHost) resolveAgentModel(modelID, effort string) (agent.ModelResoluti
 	if err := validateEffective(&cfg); err != nil {
 		return agent.ModelResolution{}, err
 	}
+	// A child on the run's model must gate exactly as that run does, even when
+	// the catalog is definite and the run inherited an unknown capability; a
+	// different model follows its own catalog entry.
+	imageInput := cfg.ImageInput
+	if modelID == sel.model {
+		imageInput = sel.imageInput
+	}
 	return agent.ModelResolution{
-		Dialect: string(cfg.Dialect),
-		BaseURL: cfg.BaseURL,
-		Limits:  cfg.Limits,
-		Pricing: catalogPrice(h.catalog, modelID),
+		Dialect:    string(cfg.Dialect),
+		BaseURL:    cfg.BaseURL,
+		Limits:     cfg.Limits,
+		Pricing:    catalogPrice(h.catalog, modelID),
+		ImageInput: imageInput,
 	}, nil
 }
 
@@ -549,6 +573,14 @@ func (h *tuiHost) effectiveConfigLocked() config {
 	cfg.InputLimit = h.next.limits.MaxInputTokens
 	cfg.Pricing = h.next.pricing
 	cfg.ThinkingEffort = h.next.effort
+	// A new session adopts the selected model's image capability. The loaded
+	// catalog is a definite answer; otherwise the selection's value carries
+	// over, and an unknown one leaves read_image to the provider.
+	if m, ok := h.catalog.Models[h.next.model]; ok {
+		cfg.ImageInput = boolPtr(m.ImageInput)
+	} else {
+		cfg.ImageInput = h.next.imageInput
+	}
 	return cfg
 }
 
@@ -794,6 +826,7 @@ func (h *tuiHost) start(sub tui.Submission, opts tui.RunOptions, steer <-chan ag
 		BaseURL:        sel.baseURL,
 		Limits:         sel.limits,
 		Pricing:        sel.pricing,
+		ImageInput:     sel.imageInput,
 		ThinkingEffort: sel.effortOption(),
 		ObserveChild:   observeChild,
 		Stream:         true,
@@ -801,7 +834,7 @@ func (h *tuiHost) start(sub tui.Submission, opts tui.RunOptions, steer <-chan ag
 		NewCompleter: func(dialect model.Dialect, baseURL, sessionID string) model.Completer {
 			return newCompleterFor(dialect, baseURL, h.cfg.Token, h.cfg.HTTPTimeout, acodeUserAgent(h.cfg.HarnessVersion), sessionID)
 		},
-		ResolveModel: h.resolveAgentModel,
+		ResolveModel: h.runModelResolver(sel),
 	}, forward, steer, control)
 	if err != nil {
 		cancel()

@@ -280,8 +280,15 @@ func applyCatalogModel(cfg *config, m model.CatalogModel, warn func(string)) err
 	}
 	cfg.MaxContextTokens = contextWindow
 	cfg.InputLimit = m.InputLimit
+	// A discovered model has a definite capability, so a text-only one makes
+	// read_image fail fast instead of reading the file.
+	cfg.ImageInput = boolPtr(m.ImageInput)
 	return nil
 }
+
+// boolPtr returns a pointer to v. It expresses "capability known" for the
+// tri-state fields where nil means unknown.
+func boolPtr(v bool) *bool { return &v }
 
 // resolveSessionThinkingEffort applies the resume/fork precedence: the
 // explicit setting wins, otherwise the latest recorded value is inherited.
@@ -400,6 +407,9 @@ func applySessionDefaults(ctx context.Context, cfg *config, state agent.State, s
 		// effective cap is the smaller of it and the new margin-adjusted
 		// context window.
 		cfg.InputLimit = state.Limits.MaxInputTokens
+		// The recorded contract has no image bit, so an inherited model stays
+		// unknown and read_image lets the provider decide.
+		cfg.ImageInput = nil
 	}
 	if err := resolveSessionThinkingEffort(ctx, cfg, state, source, resolved, warn); err != nil {
 		return err

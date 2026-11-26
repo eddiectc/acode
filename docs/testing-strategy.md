@@ -90,6 +90,11 @@ Cover at least:
   of that session that cannot dispatch `delegate`);
 - web search against a fake SearXNG and web fetch against fake builtin/Crawl4AI
   endpoints, including unconfigured and failure results;
+- a workspace image read through `read_image`, asserting the declaration
+  reaches the model, the image part appears in the next provider request, and
+  the recorded `tool_result` carries the media type, plus the `unavailable`
+  result for a model the catalog marks text-only and for a mid-session switch
+  to one;
 - TUI and `-ui-json` end to end: startup/seed, streaming before completion,
   slash commands, settings, model/effort selection, resume/fork, steering,
   interrupt/cancel, delegation roster and child focus, and frame/snapshot caps;

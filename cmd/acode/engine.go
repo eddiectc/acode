@@ -15,25 +15,29 @@ import (
 // runSelection is the per-run model choice. It never rewrites the session
 // contract: each run passes it as engine.RunSpec, so a picker selection applies
 // to the next run only and a failed selection leaves the session unchanged.
+// The image capability travels with it, so read_image's gate follows a model
+// switch on the very next run instead of waiting for a new session.
 type runSelection struct {
-	model   string
-	dialect model.Dialect
-	baseURL string
-	limits  agent.Limits
-	pricing model.Pricing
-	effort  string
+	model      string
+	dialect    model.Dialect
+	baseURL    string
+	limits     agent.Limits
+	pricing    model.Pricing
+	effort     string
+	imageInput *bool
 }
 
 // selectionFromSpec starts the next-run selection from the engine's resolved
 // session contract.
 func selectionFromSpec(spec engine.Spec) runSelection {
 	return runSelection{
-		model:   spec.Model,
-		dialect: model.Dialect(spec.Dialect),
-		baseURL: spec.BaseURL,
-		limits:  spec.Limits,
-		pricing: spec.Pricing,
-		effort:  effortValue(spec.ThinkingEffort),
+		model:      spec.Model,
+		dialect:    model.Dialect(spec.Dialect),
+		baseURL:    spec.BaseURL,
+		limits:     spec.Limits,
+		pricing:    spec.Pricing,
+		effort:     effortValue(spec.ThinkingEffort),
+		imageInput: spec.ToolOptions.ImageInput,
 	}
 }
 
@@ -72,6 +76,9 @@ func applyResolvedSpec(cfg *config, spec engine.Spec) {
 	cfg.ToolsetVersion = spec.ToolsetVersion
 	cfg.Agent = spec.Agent
 	cfg.ThinkingEffort = effortValue(spec.ThinkingEffort)
+	// The tool options are the opened host's, so the image capability recorded
+	// here is the one read_image actually gates on.
+	cfg.ImageInput = spec.ToolOptions.ImageInput
 }
 
 // batchRootGrant returns the root-only grant for a batch-created session: every

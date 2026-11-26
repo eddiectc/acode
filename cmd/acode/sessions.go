@@ -57,12 +57,13 @@ func (h *tuiHost) prepareRunLocked(opts tui.RunOptions, warn func(string)) error
 			return err
 		}
 		sel = runSelection{
-			model:   cfg.Model,
-			dialect: cfg.Dialect,
-			baseURL: cfg.BaseURL,
-			limits:  cfg.Limits,
-			pricing: cfg.Pricing,
-			effort:  sel.effort,
+			model:      cfg.Model,
+			dialect:    cfg.Dialect,
+			baseURL:    cfg.BaseURL,
+			limits:     cfg.Limits,
+			pricing:    cfg.Pricing,
+			effort:     sel.effort,
+			imageInput: cfg.ImageInput,
 		}
 	}
 	resolveRunThinkingEffort(&sel, h.catalog.Models, modelName, opts, warn)
@@ -259,6 +260,9 @@ func (h *tuiHost) ResumeSession(id string) (tui.SessionSnapshot, error) {
 	// on the current invocation, matching -resume.
 	cfg.modelSet = false
 	cfg.thinkingEffortSet = false
+	// The inherited model is not resolved through the catalog here, so its
+	// image capability is unknown and read_image must let the provider decide.
+	cfg.ImageInput = nil
 	if !cfg.baseURLSet {
 		cfg.BaseURL = ""
 	}

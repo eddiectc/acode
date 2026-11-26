@@ -392,6 +392,9 @@ func engineExitCode(err error) int {
 }
 
 // toolOptions returns the registry options shared by batch and TUI runs.
+// ImageInput is the capability of the model resolved when the host opened, the
+// same scope the SDK gives its tool options: a resume or fork without an
+// explicit model leaves it nil and read_image lets the provider decide.
 func toolOptions(cfg config, tmpDir, workDir string) tools.Options {
 	return tools.Options{
 		TmpDir:           tmpDir,
@@ -402,6 +405,7 @@ func toolOptions(cfg config, tmpDir, workDir string) tools.Options {
 		WebFetchProvider: cfg.WebFetchProvider,
 		WebFetchURL:      cfg.WebFetchURL,
 		WebFetchKey:      cfg.WebFetchKey,
+		ImageInput:       cfg.ImageInput,
 	}
 }
 

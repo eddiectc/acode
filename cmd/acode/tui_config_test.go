@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/eddiectc/acode/internal/tui"
+	"github.com/eddiectc/aharness/engine"
 	"github.com/eddiectc/aharness/model"
+	"github.com/eddiectc/aharness/tools"
 )
 
 func TestParseModeSelection(t *testing.T) {
@@ -186,6 +188,225 @@ func TestParseCatalogTerminalActionsIgnoreTTYRules(t *testing.T) {
 				t.Fatalf("terminal action retained mode flags: %+v", cfg)
 			}
 		})
+	}
+}
+
+// TestTUIEffectiveConfigFollowsTheSelectedImageCapability pins the /new rule:
+// the next session adopts the selected model's catalog capability, even when
+// the current host's tool options carry a different one.
+func TestTUIEffectiveConfigFollowsTheSelectedImageCapability(t *testing.T) {
+	t.Parallel()
+	textOnly := false
+	host := &tuiHost{
+		cfg:  config{ImageInput: &textOnly},
+		next: runSelection{model: "vision"},
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"vision": {ID: "vision", ImageInput: true},
+		}},
+	}
+	if cfg := host.effectiveConfigLocked(); cfg.ImageInput == nil || !*cfg.ImageInput {
+		t.Fatalf("effective ImageInput = %v, want the selected model's true", cfg.ImageInput)
+	}
+	// A model the loaded catalog does not know leaves the capability unknown so
+	// read_image lets the provider decide.
+	host.catalog = model.Catalog{}
+	host.next.model = "unknown"
+	if cfg := host.effectiveConfigLocked(); cfg.ImageInput != nil {
+		t.Fatalf("unknown model ImageInput = %v, want nil", *cfg.ImageInput)
+	}
+}
+
+// TestTUIResolveAgentModelCarriesTheImageCapability pins the child rule: a
+// delegated child on its own model follows that model's catalog capability,
+// and one on the run's model keeps that run's capability.
+func TestTUIResolveAgentModelCarriesTheImageCapability(t *testing.T) {
+	t.Parallel()
+	textOnly := false
+	sel := runSelection{model: "text", dialect: model.DialectChat, baseURL: testCatalogBaseURL, imageInput: &textOnly}
+	host := &tuiHost{
+		cfg:  config{Model: "text", MaxContextTokens: 200_000, MaxTurns: defaultMaxTurns, MaxTotalTokens: defaultMaxTotalTokens, SessionTimeout: defaultSessionTimeout, ModelTimeout: defaultModelTimeout},
+		next: sel,
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"text":   {ID: "text", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true},
+			"vision": {ID: "vision", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true, ImageInput: true},
+		}},
+	}
+	resolution, err := host.resolveAgentModel(sel, "vision", "")
+	if err != nil {
+		t.Fatalf("resolveAgentModel(vision): %v", err)
+	}
+	if resolution.ImageInput == nil || !*resolution.ImageInput {
+		t.Fatalf("child image capability = %v, want the child model's true", resolution.ImageInput)
+	}
+	// A model absent from the catalog but equal to the run's model keeps the
+	// run's recorded capability, as an offline resume needs.
+	host.catalog = model.Catalog{}
+	resolution, err = host.resolveAgentModel(sel, "text", "")
+	if err != nil {
+		t.Fatalf("resolveAgentModel(text): %v", err)
+	}
+	if resolution.ImageInput == nil || *resolution.ImageInput {
+		t.Fatalf("inherited child image capability = %v, want the run's false", resolution.ImageInput)
+	}
+
+	// A child on the run's model gates exactly as that run does, even when the
+	// catalog is definite and the run inherited an unknown capability.
+	unknownRun := runSelection{model: "vision", dialect: model.DialectChat, baseURL: testCatalogBaseURL}
+	unknownParent := &tuiHost{
+		cfg:  config{Model: "vision", MaxContextTokens: 200_000, MaxTurns: defaultMaxTurns, MaxTotalTokens: defaultMaxTotalTokens, SessionTimeout: defaultSessionTimeout, ModelTimeout: defaultModelTimeout},
+		next: unknownRun,
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"vision": {ID: "vision", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true, ImageInput: true},
+		}},
+	}
+	resolution, err = unknownParent.resolveAgentModel(unknownRun, "vision", "")
+	if err != nil {
+		t.Fatalf("resolveAgentModel(run model): %v", err)
+	}
+	if resolution.ImageInput != nil {
+		t.Fatalf("child on the run's model = %v, want that run's unknown", *resolution.ImageInput)
+	}
+}
+
+// TestTUIRunResolverUsesTheCapturedSelection pins the run snapshot: a resolver
+// bound when a run started keeps resolving that run's model and its
+// read_image gate, even after the host's next-run selection has moved on. The
+// picker is disabled during a run, so this guards the invariant the guard
+// depends on rather than a reachable UI path.
+func TestTUIRunResolverUsesTheCapturedSelection(t *testing.T) {
+	t.Parallel()
+	textOnly := false
+	vision := true
+	visionModel := model.CatalogModel{
+		ID: "vision", Dialect: model.DialectChat, BaseURL: "https://opencode.ai/inference/go/openai/v2",
+		ContextWindow: 200_000, ToolCall: true, ImageInput: true,
+	}
+	// The first case is an offline resume: the run's own model is absent from
+	// the loaded catalog, so only the captured selection can resolve it.
+	host := &tuiHost{
+		cfg:  config{Model: "text", MaxContextTokens: 200_000, MaxTurns: defaultMaxTurns, MaxTotalTokens: defaultMaxTotalTokens, SessionTimeout: defaultSessionTimeout, ModelTimeout: defaultModelTimeout},
+		next: runSelection{model: "text", dialect: model.DialectChat, baseURL: testCatalogBaseURL, imageInput: &textOnly},
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"vision": visionModel,
+		}},
+	}
+	resolver := host.runModelResolver(host.next)
+	// A later selection change must not reach that run's children.
+	host.next = runSelection{model: "vision", dialect: model.DialectChat, baseURL: visionModel.BaseURL, imageInput: &vision}
+
+	resolution, err := resolver("text", "")
+	if err != nil {
+		t.Fatalf("resolve the run's model: %v", err)
+	}
+	if resolution.ImageInput == nil || *resolution.ImageInput {
+		t.Fatalf("run child image capability = %v, want the captured text-only false", resolution.ImageInput)
+	}
+	if resolution.Dialect != string(model.DialectChat) || resolution.BaseURL != testCatalogBaseURL {
+		t.Fatalf("run child resolution = %+v, want the captured run's endpoint", resolution)
+	}
+
+	// The second case pins the gate itself: the catalog now knows the run's
+	// model, but that run was opened with an unknown capability, so the child
+	// must not inherit the catalog's definite value from a later selection.
+	known := &tuiHost{
+		cfg: config{Model: "text", MaxContextTokens: 200_000, MaxTurns: defaultMaxTurns, MaxTotalTokens: defaultMaxTotalTokens, SessionTimeout: defaultSessionTimeout, ModelTimeout: defaultModelTimeout},
+		next: runSelection{
+			model: "text", dialect: model.DialectChat, baseURL: testCatalogBaseURL,
+		},
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"text":   {ID: "text", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true, ImageInput: true},
+			"vision": visionModel,
+		}},
+	}
+	resolver = known.runModelResolver(known.next)
+	known.next = runSelection{model: "vision", dialect: model.DialectChat, baseURL: visionModel.BaseURL, imageInput: &vision}
+	resolution, err = resolver("text", "")
+	if err != nil {
+		t.Fatalf("resolve the run's known model: %v", err)
+	}
+	if resolution.ImageInput != nil {
+		t.Fatalf("run child image capability = %v, want the captured unknown", *resolution.ImageInput)
+	}
+	// A child asking for another model still follows its own catalog entry,
+	// because it is not the run's model.
+	resolution, err = resolver("vision", "")
+	if err != nil {
+		t.Fatalf("resolve another model: %v", err)
+	}
+	if resolution.ImageInput == nil || !*resolution.ImageInput {
+		t.Fatalf("other-model child image capability = %v, want the catalog's true", resolution.ImageInput)
+	}
+}
+
+// TestTUIPrepareRunCarriesTheImageCapability pins the RunOptions.Model arm, the
+// fallback a host without the picker's SelectModel call uses: a run whose
+// options name a different model adopts that model's catalog capability.
+func TestTUIPrepareRunCarriesTheImageCapability(t *testing.T) {
+	t.Parallel()
+	textOnly := false
+	host := &tuiHost{
+		cfg:  config{Model: "text", MaxContextTokens: 200_000, MaxTurns: defaultMaxTurns, MaxTotalTokens: defaultMaxTotalTokens, SessionTimeout: defaultSessionTimeout, ModelTimeout: defaultModelTimeout},
+		next: runSelection{model: "text", dialect: model.DialectChat, baseURL: testCatalogBaseURL, imageInput: &textOnly},
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"text":   {ID: "text", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true},
+			"vision": {ID: "vision", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true, ImageInput: true},
+		}},
+	}
+	if err := host.prepareRunLocked(tui.RunOptions{Model: "vision"}, func(string) {}); err != nil {
+		t.Fatalf("prepareRunLocked: %v", err)
+	}
+	if host.next.model != "vision" || host.next.imageInput == nil || !*host.next.imageInput {
+		t.Fatalf("run selection = %q/%v, want vision with the catalog's true", host.next.model, host.next.imageInput)
+	}
+}
+
+// TestTUISelectModelRefreshesTheImageCapability pins re-selecting the current
+// model: the catalog is a definite answer, so an unknown run capability becomes
+// known instead of staying stale.
+func TestTUISelectModelRefreshesTheImageCapability(t *testing.T) {
+	t.Parallel()
+	text := runSelection{model: "text"}
+	host := &tuiHost{
+		cfg:  config{Model: "text"},
+		next: text,
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"text": {ID: "text", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true},
+		}},
+	}
+	if _, err := host.SelectModel("text"); err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	if host.next.imageInput == nil || *host.next.imageInput {
+		t.Fatalf("re-selected image capability = %v, want the catalog's false", host.next.imageInput)
+	}
+}
+
+// TestTUISelectModelCarriesTheImageCapability pins the per-run gate: a picker// switch moves the selected model's catalog capability into the run selection,
+// which Start passes as engine.RunSpec.ImageInput, so read_image follows the
+// new model on the next run.
+func TestTUISelectModelCarriesTheImageCapability(t *testing.T) {
+	t.Parallel()
+	textOnly := false
+	host := &tuiHost{
+		cfg:  config{Model: "text", ImageInput: &textOnly},
+		next: selectionFromSpec(engine.Spec{Model: "text", ToolOptions: tools.Options{ImageInput: &textOnly}}),
+		catalog: model.Catalog{Models: map[string]model.CatalogModel{
+			"text":   {ID: "text", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true},
+			"vision": {ID: "vision", Dialect: model.DialectChat, BaseURL: testCatalogBaseURL, ContextWindow: 200_000, ToolCall: true, ImageInput: true},
+		}},
+	}
+	if _, err := host.SelectModel("vision"); err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	if host.next.imageInput == nil || !*host.next.imageInput {
+		t.Fatalf("selected image capability = %v, want the new model's true", host.next.imageInput)
+	}
+	if host.cfg.ImageInput == nil || *host.cfg.ImageInput {
+		t.Fatalf("session image capability = %v, want the recorded false untouched", host.cfg.ImageInput)
+	}
+	// The next session adopts the same answer.
+	if cfg := host.effectiveConfigLocked(); cfg.ImageInput == nil || !*cfg.ImageInput {
+		t.Fatalf("effective ImageInput = %v, want true", cfg.ImageInput)
 	}
 }
 
