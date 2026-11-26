@@ -165,12 +165,12 @@ forces the whole call to run sequentially.
 The TUI renders one foldable block per delegated call. `/agent-hub` shows a
 live roster of running children with agent, intent, model, effort, elapsed,
 context tokens, turns, cost, and status. `Enter` on a roster row focuses that
-child: its read-only transcript replaces the parent view, and composer input
-becomes steering for the child; `Esc` returns to the parent without
-interrupting it. `/agents` browses the definitions and edits an agent's
-`model`, `thinking_effort`, `max_turns`, and `enabled` through the
-`agent_overrides` config object. Tool grants and prompts stay file-only, so the
-settings surface cannot widen authority.
+child: its read-only transcript replaces the parent view and updates live while
+the child streams, and composer input becomes steering for the child; `Esc`
+returns to the parent without interrupting it. `/agents` browses the definitions
+and edits an agent's `model`, `thinking_effort`, `max_turns`, and `enabled`
+through the `agent_overrides` config object. Tool grants and prompts stay
+file-only, so the settings surface cannot widen authority.
 
 Child input and output tokens count against `-max-total-tokens`. Child turns do
 not count against `-max-turns`, but seed the child's default cap.

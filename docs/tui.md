@@ -382,9 +382,21 @@ parent transcript gains no item. Each submission carries a host-assigned
 steering ID, and the SDK echoes it on `SubagentMessageRecorded`, so the view
 drops exactly the line the child accepted even when two submissions have
 identical text. A line sent while a model call is in flight shows as `queued…`
-until that acknowledgement. `SubagentProgress` and `SubagentFinished` refresh
-the view; it never polls a timer. A finished child opens read-only and refuses
-steering with a notice.
+until that acknowledgement.
+
+The focused transcript streams while the child runs. The host registers a live
+sink for each delegated child, and the child's own text deltas, tool calls,
+notices, and run start/finish update the view before the parent sees a progress
+event. `SubagentProgress` and `SubagentFinished` still refresh the view from the
+child log; that snapshot is canonical and replaces the live list, and a delta
+for a turn the snapshot already covers is ignored, so text never duplicates.
+Live updates coalesce on the same 33 ms tick as the parent transcript; the view
+never polls a timer. A host that omits the optional child-observation
+capability keeps the snapshot-only view. Registering the sink makes the SDK
+stream every delegated child, so a transport failure after a child's first text
+delta is terminal instead of retried; batch runs register no observer and keep
+the full retry budget. A finished child opens read-only and refuses steering
+with a notice.
 
 `Esc` returns to the parent without interrupting the child; with a non-empty
 composer it first clears the draft, like the parent view. A second `Esc` at the

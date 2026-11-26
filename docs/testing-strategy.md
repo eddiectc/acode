@@ -49,6 +49,12 @@ servers.
   order without closing the channel, a stale SDK run ID cannot change the
   header, and a retry (`ModelStarted.Attempt`) is distinguishable from a new
   turn for the thinking block;
+- live child view: a child delta renders before a progress event, a snapshot
+  refresh replaces the live item without duplication, a queued delta for a
+  snapshotted turn is ignored, tool starts pair with completions, a steer
+  acknowledgement drops the queued line, a live finish makes the view
+  read-only, concurrent sibling streams leave the focused view alone, and a
+  sink invoked after the run stops returns nil;
 - headless `x/vt` cell/style/cursor projection, SVG snapshots, and the
   `-ui-json` command/event/frame encoders.
 
@@ -74,7 +80,9 @@ Cover at least:
 - both dialects and the catalog model picker/refresh actions;
 - resume/fork after interruption, unpaired calls, and torn final lines;
 - custom-tool refusal on the CLI, authorization, todo restoration, and
-  delegation with child logs and folded accounting;
+  delegation with child logs and folded accounting, including a focused child
+  view that shows streamed child text before `SubagentFinished` and a batch
+  resume that cannot start a child at all;
 - the recorded session contract: prompt version, `appended_prompt` on new TUI
   and batch sessions, retention on resume, inheritance on fork, the acode
   identity line inside `system_prompt`, and the grant split (`tools` full,

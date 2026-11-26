@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/eddiectc/aharness/agent"
+	"github.com/eddiectc/aharness/session"
 	"github.com/eddiectc/aharness/tools"
 )
 
@@ -761,4 +762,266 @@ func TestTUIResumeOfBatchSessionCannotDelegate(t *testing.T) {
 	if !strings.Contains(log, `"name":"delegate"`) || !strings.Contains(log, `"code":"unknown_tool"`) {
 		t.Fatalf("the recorded root grant did not withhold delegate:\n%s", log)
 	}
+}
+
+// TestSubagentFocusedChildStreamsLiveDeltas proves the focused child view shows
+// delegated text while the child is still streaming. The child's first turn is a
+// buffered tool call, so focus opens on a snapshotted turn; its second turn
+// streams and the provider holds the stream open until a frame shows the first
+// chunk. The child log then records the observed-streaming contract.
+func TestSubagentFocusedChildStreamsLiveDeltas(t *testing.T) {
+	t.Parallel()
+	bin := buildHarness(t)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "hello.txt"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+
+	var startOnce, streamOnce sync.Once
+	childStarted := make(chan struct{})
+	releaseChild := make(chan struct{})
+	streaming := make(chan struct{})
+	releaseStream := make(chan struct{})
+	provider := newFakeProvider(t, func(w http.ResponseWriter, r *http.Request, call int, body []byte) {
+		switch call {
+		case 1:
+			writeJSON(w, 200, chatDelegateResponse("call_live",
+				`{"intent":"delegate the read","tasks":[{"agent":"explore","task":"Read hello.txt and report its contents."}]}`))
+		case 2:
+			// Hold the child's first turn until the test has focused its view.
+			startOnce.Do(func() { close(childStarted) })
+			<-releaseChild
+			writeJSON(w, 200, chatToolCallResponse())
+		case 3:
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeSSE(t, w, "", `{"choices":[{"index":0,"delta":{"content":"child observed "}}]}`)
+			streamOnce.Do(func() { close(streaming) })
+			<-releaseStream
+			writeSSE(t, w, "", `{"choices":[{"index":0,"delta":{"content":"live tokens."}}]}`)
+			writeSSE(t, w, "", `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+			writeSSE(t, w, "", `{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4}}`)
+			writeSSE(t, w, "", `[DONE]`)
+		case 4:
+			writeJSON(w, 200, chatFinalResponse("parent done"))
+		default:
+			writeJSON(w, 500, map[string]any{"error": "unexpected model call"})
+		}
+	})
+
+	h := startInteractiveHarness(t, bin, workspace, stateDir, provider.url, nil,
+		"-ui-json", "-ui-size", "120x30", "-model", "deepseek-v4.1-flash", "-max-turns", "6")
+	h.send(`{"v":1,"type":"text","text":"delegate the read"}`)
+	h.send(`{"v":1,"type":"key","key":"enter"}`)
+	h.framesUntil("tool delegate")
+	<-childStarted
+	h.send(`{"v":1,"type":"text","text":"/agent-hub"}`)
+	h.send(`{"v":1,"type":"key","key":"enter"}`)
+	h.framesUntil("intent")
+	h.send(`{"v":1,"type":"key","key":"enter"}`)
+	h.framesUntil("child explore")
+	close(releaseChild)
+	<-streaming
+	// The provider is blocked mid-stream, so the frame below is proof the view
+	// shows child text before SubagentFinished exists.
+	h.framesUntil("child observed")
+	close(releaseStream)
+	h.send(`{"v":1,"type":"key","key":"esc"}`)
+	h.framesUntil("parent done")
+	h.quit()
+
+	// The frames requested before releaseStream prove the view showed child text
+	// while the child was mid-stream. Here, check that no such text appeared
+	// before the view was focused, and that every focused live frame reports no
+	// overlay.
+	liveFrames := 0
+	sawFocused := false
+	var leaked string
+	for line := range strings.SplitSeq(strings.TrimSpace(h.output()), "\n") {
+		var frame struct {
+			Type    string   `json:"type"`
+			Overlay string   `json:"overlay"`
+			Lines   []string `json:"lines"`
+		}
+		if err := json.Unmarshal([]byte(line), &frame); err != nil || frame.Type != "frame" {
+			continue
+		}
+		body := strings.Join(frame.Lines, "\n")
+		focused := strings.Contains(body, "child explore")
+		if strings.Contains(body, "child observed") {
+			if !sawFocused && leaked == "" {
+				leaked = body
+			}
+			if focused {
+				liveFrames++
+				if frame.Overlay != "none" {
+					t.Errorf("live child frame overlay = %q, want none", frame.Overlay)
+				}
+			}
+		}
+		if focused {
+			sawFocused = true
+		}
+	}
+	if leaked != "" {
+		t.Fatalf("child text appeared before the focused view:\n%s", leaked)
+	}
+	if liveFrames == 0 {
+		t.Fatalf("no frame showed the streamed child text:\n%s", h.output())
+	}
+
+	files, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.jsonl"))
+	if err != nil || len(files) != 2 {
+		t.Fatalf("session logs = %v (%v), want a parent and one child", files, err)
+	}
+	foundChild := false
+	for _, path := range files {
+		events := readSessionEvents(t, path)
+		var start struct {
+			ParentCallID string `json:"parent_call_id"`
+		}
+		if err := json.Unmarshal(events[0].Data, &start); err != nil {
+			t.Fatalf("decode session_start: %v", err)
+		}
+		if start.ParentCallID == "" {
+			continue
+		}
+		foundChild = true
+		if got := countEventType(events, "delta"); got != 0 {
+			t.Fatalf("child log contains %d display deltas", got)
+		}
+		streamed := false
+		for _, ev := range events {
+			var data struct {
+				Stream   bool   `json:"stream"`
+				Text     string `json:"text"`
+				Streamed bool   `json:"streamed"`
+			}
+			switch ev.Type {
+			case session.TypeRunStart:
+				if err := json.Unmarshal(ev.Data, &data); err != nil {
+					t.Fatalf("decode run_start: %v", err)
+				}
+				if !data.Stream {
+					t.Fatalf("observed child run_start.stream = false: %s", ev.Data)
+				}
+			case session.TypeModelResponse:
+				if err := json.Unmarshal(ev.Data, &data); err != nil {
+					t.Fatalf("decode model_response: %v", err)
+				}
+				if strings.Contains(data.Text, "child observed") {
+					if !data.Streamed {
+						t.Fatalf("streamed child response recorded streamed = false: %s", ev.Data)
+					}
+					streamed = true
+				}
+			}
+		}
+		if !streamed {
+			t.Fatal("child log has no streamed model_response")
+		}
+	}
+	if !foundChild {
+		t.Fatalf("no child session log in %v", files)
+	}
+}
+
+// TestBatchResumeOfTUISessionCannotDelegate pins the batch side of the
+// observation trade. Batch loads no agent definitions, so it has no spawner and
+// cannot start a child even when it resumes a TUI-created session whose grant
+// still offers delegate. No batch child log can therefore exist, and the batch
+// path never registers an observer.
+func TestBatchResumeOfTUISessionCannotDelegate(t *testing.T) {
+	t.Parallel()
+	bin := buildHarness(t)
+	workspace := t.TempDir()
+	stateDir := t.TempDir()
+
+	// One provider serves the seeding TUI run and the batch run, so the recorded
+	// base URL stays valid across the resume.
+	provider := newFakeProvider(t, func(w http.ResponseWriter, r *http.Request, call int, body []byte) {
+		switch call {
+		case 1:
+			writeJSON(w, 200, chatFinalResponse("seeded"))
+		case 2:
+			writeJSON(w, 200, chatDelegateResponse("call_batch",
+				`{"intent":"delegate the read","tasks":[{"agent":"explore","task":"Read hello.txt and report its contents."}]}`))
+		case 3:
+			writeJSON(w, 200, chatFinalResponse("parent done"))
+		default:
+			writeJSON(w, 500, map[string]any{"error": "unexpected model call"})
+		}
+	})
+	seed := runHarnessRawScript(t, bin, workspace, stateDir, provider.url,
+		`{"v":1,"type":"text","text":"seed the session"}`,
+		`{"v":1,"type":"key","key":"enter"}`,
+		`{"v":1,"type":"wait","until":"idle","timeout_ms":20000}`,
+		`{"v":1,"type":"quit"}`)
+	if seed.exit != 0 {
+		t.Fatalf("seed exit = %d\nstdout:\n%s\nstderr:\n%s", seed.exit, seed.stdout, seed.stderr)
+	}
+	files, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("seed session logs = %v (%v)", files, err)
+	}
+	sessionID := strings.TrimSuffix(filepath.Base(files[0]), ".jsonl")
+
+	stdout, stderr, exit := runHarnessRaw(t, bin, workspace, stateDir, provider.url, strings.NewReader(""),
+		"-batch", "-resume", sessionID, "-task", "delegate the read",
+		"-model", "deepseek-v4.1-flash", "-max-turns", "6")
+	if exit != 0 {
+		t.Fatalf("batch exit = %d\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
+	}
+	files, err = filepath.Glob(filepath.Join(stateDir, "sessions", "*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("session logs = %v (%v), want only the resumed parent", files, err)
+	}
+	events := readSessionEvents(t, files[0])
+	foundDelegate, streamedRun := false, false
+	for _, ev := range events {
+		switch ev.Type {
+		case session.TypeRunStart:
+			// The log also holds the seeding TUI run, which streamed; the last
+			// run_start is the batch run under test.
+			var data struct {
+				Stream bool `json:"stream"`
+			}
+			if err := json.Unmarshal(ev.Data, &data); err != nil {
+				t.Fatalf("decode run_start: %v", err)
+			}
+			streamedRun = data.Stream
+		case session.TypeToolResult:
+			var data struct {
+				Name  string `json:"name"`
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(ev.Data, &data); err != nil {
+				t.Fatalf("decode tool_result: %v", err)
+			}
+			if data.Name != "delegate" {
+				continue
+			}
+			foundDelegate = true
+			if data.Code != string(tools.CodeUnavailable) || !strings.Contains(data.Error, "no agent definitions") {
+				t.Fatalf("batch delegate result = %+v, want unavailable", data)
+			}
+		}
+	}
+	if streamedRun {
+		t.Fatal("batch run_start.stream = true")
+	}
+	if !foundDelegate {
+		t.Fatal("the batch run never attempted delegate")
+	}
+}
+
+// runHarnessRawScript runs the binary with a generated -ui-json script.
+func runHarnessRawScript(t *testing.T, bin, workspace, stateDir, baseURL string, commands ...string) harnessRun {
+	t.Helper()
+	script := strings.Join(commands, "\n") + "\n"
+	stdout, stderr, exit := runHarnessRaw(t, bin, workspace, stateDir, baseURL, strings.NewReader(script),
+		"-ui-json", "-ui-size", "120x30", "-model", "deepseek-v4.1-flash", "-max-turns", "6")
+	return harnessRun{stdout: stdout, stderr: stderr, exit: exit}
 }

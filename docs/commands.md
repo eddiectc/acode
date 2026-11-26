@@ -358,8 +358,11 @@ child is running. Trailing words are accepted and ignored, like every
 no-argument command. It adds no protocol event: the roster appears in
 `-ui-json` `frames` and `snapshots`.
 
-`Enter` on a row opens that child's transcript and focuses it. While the child
-runs, composer input is steering for that child rather than the parent: the
+`Enter` on a row opens that child's transcript and focuses it. The transcript
+streams while the child runs: its own text, tool calls, and notices appear as
+they are recorded, and each progress or finish boundary replaces the live list
+with the canonical child log. While the child runs, composer input is steering
+for that child rather than the parent: the
 child consumes it at its next turn boundary and records it with
 `source=subagent-steer`, which the child view labels `delegation steer`. The
 parent transcript is unchanged. A finished child opens read-only and rejects
