@@ -24,6 +24,7 @@ for status, deviations, and verification notes.
 ## Precedence
 
 - [coding-standard.md](coding-standard.md) wins on Go practice.
+- [writing-standard.md](writing-standard.md) wins on prose.
 - The current reference documents win on app structure, runtime contracts,
   numeric limits, and shipped surface: [architecture.md](architecture.md),
   [configuration.md](configuration.md), [limits.md](limits.md),
@@ -50,6 +51,7 @@ for status, deviations, and verification notes.
 | [release.md](release.md) | Branch model, commit wording, pull-request gating, and release tagging |
 | [testing-strategy.md](testing-strategy.md) | Config, integration, TUI/headless, fuzz, and manual smoke layers |
 | [tui.md](tui.md) | Shipped TUI modes, keys, protocol, caps, and verification status |
+| [writing-standard.md](writing-standard.md) | Normative prose: one home per fact, line budgets, code comments, commits, issues, and pull requests |
 
 ### Build plans
 
