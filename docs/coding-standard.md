@@ -83,8 +83,9 @@ repository's package structure. The rules below apply to every package.
   `ultraviolet`, `x/ansi`) and `golang.org/x/term`. These are the only approved
   application-framework modules: the standard library has no maintained
   full-screen TUI, markdown renderer, or chart package to build on, and the
-  shipped caps and protocol are in [tui.md](tui.md). Do not add a second
-  application framework, a theme system, or another markdown/chart library.
+  shipped caps and protocol are in [limits.md](limits.md) and [tui.md](tui.md). Do
+  not add a second application framework, a theme system, or another markdown/chart
+  library.
   Re-measure binary impact on dependency changes and record the result.
 - The `web_fetch` extractor (`github.com/markusmobius/go-trafilatura/v2`) is
   an aharness SDK dependency. acode imports it only transitively through the

@@ -1,20 +1,15 @@
 # acode TUI (shipped)
 
-- **Date:** 2026-11-15
-- **Status:** implemented, covering the catalog-backed model picker, thinking
-  effort controls, transcript folding, the persistent todo widget, the
-  selectable built-in and Solarized palettes, and the delegated-child roster
-  and focus view. This document records the shipped surface; caps live in
-  [limits.md](limits.md) and commands in [commands.md](commands.md).
-- **Verified:** fake-provider TUI/`-ui-json` integration (streaming, tools,
-  steering, interrupts, resume, fork, signals, `F3` folding, and the todo
-  widget's render/restore path), headless `x/vt` frames and SVG snapshots, race
-  tests, and a manual PTY smoke under
-  `script(1)` at 80x24. The real-provider TUI smoke with a reasoning-capable
-  model remains pending provider credentials.
-- **Not verified:** Kitty graphics and the real-terminal 200x60/tmux matrix
-  (manual, needs a Kitty-capable terminal and tmux); real-provider streaming and
-  transcript folding against the hosted endpoint.
+- **Date:** 2026-11-27
+- **Status:** implemented, covering the model and effort pickers, transcript
+  folding, the todo widget, themes, and the delegated-child roster and focus view.
+  Caps live in [limits.md](limits.md), commands in [commands.md](commands.md), and
+  the `F1` overlay is the complete key and command listing.
+- **Verified:** fake-provider TUI/`-ui-json` integration, headless `x/vt` frames
+  and SVG snapshots, race tests, and a manual PTY smoke under `script(1)` at
+  80x24; the real-provider TUI smoke is pending provider credentials.
+- **Not verified:** Kitty graphics and the real-terminal 200x60/tmux matrix;
+  real-provider streaming and folding against the hosted endpoint.
 
 ## Modes
 
@@ -22,627 +17,280 @@
 |---|---|
 | `-version` | print build info and exit 0 before mode selection |
 | `-ui-json` | headless TUI on stdio; no TTY/`TERM` requirement; no alternate screen or raw mode |
-| `-batch` | one-shot CLI, stdout/stderr contract and exit codes unchanged |
+| `-batch` | one-shot CLI, stdout/stderr contract unchanged |
 | stdin and stdout are terminals | TUI (default) |
 | either is not a terminal | batch automatically |
 
-`-interactive` is gone; it is an unknown-flag error. Batch mode is
-non-interactive and has no steering.
-
-TUI and `-ui-json`:
-
-- create a new session eagerly and allow an omitted task;
-- always stream assistant text; `-stream=false` is a config error;
-- show model thinking as a separate, display-only `thinking` transcript block
-  under the run it belongs to, folded by default (see [Thinking](#thinking));
-- show the checklist published by the `todo` tool in a persistent capped panel
-  above the composer (see [Todo widget](#todo-widget));
-- auto-submit `-task`/`-task-file` after the first frame;
-- allow new/resume/fork, with `-fork` optionally having no task;
-- never print final assistant text to stdout;
-- exit 0 on a clean idle quit, 130 for a quit while a run is active or on
-  `SIGTERM`/`SIGHUP`, 2 for config/TTY/`TERM`/protocol usage errors, and 1 for
-  a terminal/setup/sync/internal failure.
-
-The session log and the CLI batch contract are unchanged. A TUI process owns
-one active session, one exclusive `flock`, and one writer at a time; each
-submitted message while idle starts one run. `/new` and `/resume` replace that
-session in place while idle, opening and validating the next session before
-closing the old store; the old log remains durable and resumable.
+`-interactive` is gone; it is an unknown-flag error. Selection order, exit codes,
+and eager session creation are [architecture.md §4](architecture.md#4-modes-and-selection)
+and [§7](architecture.md#7-exit-codes). The TUI and `-ui-json` always stream
+(`-stream=false` is a config error), auto-submit a seeded `-task` after the first
+frame, and never print final text to stdout.
 
 ## Keys
 
-| Key | Idle | Run active |
-|---|---|---|
-| `Enter` | submit a new run | submit steering |
-| `Shift-Enter`/`Alt-Enter` | insert a composer newline | insert a composer newline |
-| `Esc` | close overlay, then clear a non-empty composer; never quits | close overlay; otherwise interrupt the in-flight operation |
-| `Ctrl-C` | clear a non-empty composer; otherwise show a quit hint | first: interrupt the operation; second: cancel the run |
-| `Ctrl-D` | quit 0 | cancel the run and quit 130 |
-| `Ctrl-L` | full repaint | full repaint |
-| `Ctrl-U` | clear the composer | clear the composer |
-| `Ctrl-A`/`Ctrl-E` | composer start/end | composer start/end |
-| `Ctrl-W`/`Ctrl-K` | delete previous word / to end | delete previous word / to end |
-| `Up`/`Down` | input history | input history |
-| `PgUp`/`PgDn` | scroll the transcript | scroll the transcript |
+`Enter` submits the composer, or steers an active run or focused child; `Esc` closes
+an overlay, clears a non-empty composer, then interrupts; `Ctrl-C` interrupts first
+and cancels second; `Ctrl-D` quits. The `F1` overlay lists every other key, overlay
+binding, and command and is the shipped truth for them.
 
-While an `/agent-hub` child is focused, `Enter` submits the composer as steering
-for that child, `PgUp`/`PgDn` and the wheel scroll the child transcript, and
-`Esc` clears a non-empty composer and then returns to the parent without
-interrupting the child. A second `Esc` at the parent interrupts as usual.
-| Wheel | scroll the transcript or the top overlay | scroll the transcript or the top overlay |
-| `Shift`+drag, `Shift`+middle-click | terminal-side text selection and paste (the mouse capture takes both otherwise) | terminal-side text selection and paste |
-| `Ctrl-R` | toggle rich/raw assistant rendering; in the model picker, refresh the catalog | toggle rich/raw |
-| `Ctrl-T` | most recent markdown table overlay | table overlay |
-| `Ctrl-G` | image viewer for the most recent image block | image viewer |
-| `Ctrl-P` | catalog-backed model picker for the next run | disabled with a notice |
-| `Ctrl-O` | workspace file picker (Bubbles list; see note) | disabled with a notice |
-| `F1` | help overlay | help overlay |
-| `F2` | thinking-effort picker for the next run | disabled with a notice |
-| `F3` | expand/collapse all thinking and tool blocks; the mode is sticky | same |
-| `F4` | edit the composer in `$VISUAL`/`$EDITOR` | disabled with a notice |
-| `Ctrl-X` | details overlay | details overlay |
-| `Tab` | composer tab (four spaces) | composer tab (four spaces) |
-| Overlay `Tab`/`Shift-Tab` | move focus | move focus |
-| Overlay `Esc` | close the top overlay | close the top overlay |
-
-A bare `Esc` is recognized only after the 50 ms escape timeout. Option/Alt
-sequences, including Option-`[` and Option-`]`, are decoded as modified keys
-and never interrupt; `Ctrl-C` remains the authoritative global interrupt. The
-help overlay (`F1`) lists the shipped keys and slash commands, including `F2`,
-`F3`, `F4`, and the overlay keys. While the slash-command menu is open,
-`Up`/`Down` move its selection, `Tab` completes, `Enter` runs the highlighted
-command, and `Esc` dismisses the menu before the normal `Esc` action.
-
-The composer is a multi-line text area. It grows with the draft up to six
-rows, and past the sixth row it scrolls internally. `Shift-Enter` and
-`Alt-Enter` insert a newline; plain `Enter` submits or steers. `F4` writes the
-current draft to a temporary Markdown file, runs `$VISUAL` (or `$EDITOR` when
-`$VISUAL` is unset) in the terminal, and replaces the composer with the edited
-text when the editor exits successfully. A failed editor leaves the draft
-unchanged. The editor is idle-only so a blocking process cannot stall display
-events from an active run, and the result is read back under the normal 64 KiB
-composer cap.
-
-An empty transcript shows a short tips block (`F1`, `Shift`+drag,
-`Ctrl+Shift+V`, the wheel, and the pickers). It disappears with the first
-transcript item and is dropped for a transcript too short to hold it, which
-keeps the one-line prompt and the composer. No `-ui-json` key or protocol
-change is involved; the block is ordinary frame text.
+The composer grows to six rows and then scrolls, `Shift-Enter`/`Alt-Enter` inserts a
+newline, and `Up`/`Down` recall history. `F4` edits the draft in `$VISUAL`/`$EDITOR`
+while idle, and an empty transcript shows a tips block naming `F1`, `Shift`+drag,
+`Ctrl+Shift+V`, the wheel, and the pickers that disappears with the first transcript
+item. The escape timeout and the composer cap are in [limits.md](limits.md), and a
+modified sequence such as Option-`[` never interrupts.
 
 ## Slash commands
 
-The composer executes a registered command instead of starting or steering a
-run. Typing `/` opens a filtered completion menu: `Up`/`Down` select, `Tab`
-completes, `Enter` runs the highlighted command, and `Esc` dismisses. Command
-names are case-insensitive; a space starts argument mode; unknown `/text` is
-sent as a normal message, and `-task`/`-task-file` text is always literal.
-While a run is active, commands still work, but actions that only affect the
-next run and session switching are disabled with a notice. `/prompt` and
-`/request` are display-only and work idle or during a run: `Up`/`Down`,
-`PgUp`/`PgDn`, and the wheel scroll them, and `Esc` closes them. `/new` starts a
-fresh session in the current workspace; `/resume` opens a picker of previous
-sessions recorded for the same workspace, excluding the active one. The full
-reference — syntax, arguments, key equivalents, idle/active behavior,
-`-ui-json` mapping, and examples — is in [commands.md](commands.md). The help
-overlay (`F1`) lists every command.
+Typing `/` opens a filtered completion menu: `Up`/`Down` select, `Tab` completes,
+`Enter` runs, and `Esc` dismisses before the normal `Esc` action. Commands work
+during a run, but next-run settings and session switching are disabled with a
+notice. [commands.md](commands.md) owns invocation, syntax, arguments, scope, and
+the `-ui-json` mapping.
 
 ## Settings
 
-`/settings` opens a browser for every key in the active config file. It lists
-the model, provider, workspace, provider and catalog URLs, thinking effort, run
-budgets, timeouts, usage/logging switches, SearXNG and `web_fetch` settings,
-`ui_rich`, `ui_expand_all`, `ui_theme`, and an `agent_overrides` row that opens
-`/agents`. The value column shows the saved value, or the current effective
-value when the file omits the key; the source column reports `file`, `flag`,
-`env`, or `current` (`runtime` when a live display value no longer matches the
-file), and the footer explains the selected row and warns when a flag or
-environment variable overrides a saved value.
-
-`Up`/`Down`/`PgUp`/`PgDn`/`Home`/`End` and the wheel move the selection.
-`Enter`/`Space` opens an inline editor for text, integer, duration, and secret
-rows, and saves the next option for toggles and enums; `Left`/`Right` cycle the
-latter. `Enter` saves an edit and an empty value removes the key; `Esc` cancels
-the edit before it closes the browser. `r` removes the saved key so the
-built-in default applies, and is a no-op when the row has no saved value.
-
-Validation uses the startup rules: model IDs against the loaded catalog when
-available, provider names, workspace existence, base and catalog URLs, SearXNG
-and `web_fetch` URLs, duration bounds, non-negative budgets, a positive context
-window, thinking effort against the effective model, and theme names. The
-candidate file's own values are validated before the atomic 0600 replacement,
-every other key is preserved, a path inside the workspace is refused, and
-`-config ""` disables saving. The `web_fetch_key` value is never rendered or prefilled; the row says
-`set` or `(unset)`, the editor buffer is masked, and the overlay warns when the
-`web_fetch_provider`/`web_fetch_url` pair is incomplete.
-
-A saved value is read at the next startup. `ui_rich`, `ui_expand_all`, and
-`ui_theme` also apply to the current process immediately; a value changed with
-`Ctrl-R` or `F3` since startup is labelled `runtime`, and so is a theme that no
-longer matches the file. The overlay works while idle or running because it
-never changes the active run or the session log, and it emits no protocol event
-(the `-ui-json` overlay value is `settings`, and `r` may arrive as a
-one-character text message). See
-[commands.md § `/settings`](commands.md#settings).
+`/settings` opens a browser over the active config file.
+`Up`/`Down`/`PgUp`/`PgDn` and the wheel move, `Enter`/`Space` edit a text, integer,
+duration, or secret row or advance a toggle and enum, `Left`/`Right` cycle those,
+`r` removes the saved key, and `Esc` cancels an edit before closing. Rows, source
+column, validation, masking, the atomic write, and the display preferences that apply
+to this process immediately are [configuration.md §2](configuration.md#2-config-file).
 
 ## Themes
 
-Three palettes ship: `acode` (the built-in dark palette), `solarized-dark`, and
-`solarized-light`. `ui_theme` selects one at startup, and `/settings` applies a
-saved choice to the current process immediately. No session event or protocol
-field records the theme, and `-ui-json` frames and snapshots carry it only as
-ordinary style spans.
-
-The built-in `acode` palette leaves the terminal's own background alone. The
-Solarized palettes paint the whole frame, including the transcript, composer,
-overlays, and picker chrome, so `solarized-light` is legible on a dark terminal
-and `solarized-dark` is legible on a light one. Markdown rendering follows the
-palette's light/dark mode, and `NO_COLOR` keeps its usual meaning: attributes
-survive and color and background are stripped. `Ctrl-X` details names the
-active theme.
+`ui_theme` selects `acode`, `solarized-dark`, or `solarized-light`
+([configuration.md §2](configuration.md#2-config-file)). Markdown follows the
+palette's light/dark mode, `NO_COLOR` strips color and background but keeps
+attributes, no session event or protocol field records the choice, and `Ctrl-X` names
+the active theme.
 
 ## Session picker
 
-`/new` replaces the active session with a fresh log in the same workspace and
-resets the transcript and counters. `/resume` opens a filtered list of previous
-sessions recorded for the same canonical workspace, newest first and excluding
-the active session. Each row shows the first task, session ID prefix,
-modification time, and recorded model; `Up`/`Down` select, `Enter` resumes, and
-`Esc` closes the picker. Both commands are idle-only and both open the target
-through the same engine path as startup, reading its history and counters
-before closing the old host. A successful switch replays the target's history
-and counters and emits a display-only `notice` with kind `session`; a locked,
-corrupt, or other-workspace target reports the error and leaves the active
-session open. See [commands.md § `/new`](commands.md#new) and
-[commands.md § `/resume`](commands.md#resume).
+`/resume` opens a filtered list of previous sessions for the same canonical
+workspace, newest first and excluding the active one. Each row shows the first
+task, session ID prefix, modification time, and recorded model; typing filters,
+`Up`/`Down` select, `Enter` resumes, and `Esc` closes without switching. A
+successful switch replays the target's history and counters and emits a display-only
+`notice`; a locked, corrupt, or other-workspace target reports the error and leaves
+the active session open.
 
 ## Model picker
 
-`Ctrl-P` opens the catalog-backed model picker while idle; a run disables it
-with a notice. Entries are the usable models from models.dev, sorted by ID. Each
-row shows the display name, ID, dialect, context and input limits, advertised
-output ceiling, the normalized supported effort values (`effort low/high/max`,
-or `effort -` when the model advertises none), and a `deprecated` / `alpha` /
-`beta` marker and a `translated` marker when applicable. Deprecated models
-remain selectable and are never chosen automatically. The advertised output
-ceiling is catalog metadata, not the
-effective request budget: unless `-max-output-tokens` is explicit, output is
-unset and the request omits the field.
+`Ctrl-P` opens the catalog-backed picker while idle; a run disables it with a
+notice. Entries are the usable models.dev models sorted by ID, each row showing the
+display name, ID, dialect, context and input limits, advertised output ceiling,
+normalized effort values, and `deprecated`/`alpha`/`beta` and `translated` markers;
+the advertised ceiling is metadata, not the request budget.
 
-Selecting a model changes only the next run's dialect, base URL, and limits;
-the current run and existing log are untouched. The header context ratio
-updates immediately from the host's resolved limit, including a clamp, even
-though the change applies to the next run. An explicit context limit is
-clamped to the new model's window; an explicit output budget is sent unchanged.
-A next-run thinking effort is kept when the new model advertises it; otherwise
-it is cleared to the provider default with a notice, and the next `run_start`
-records the cleared value. The details overlay (`Ctrl-X`) shows the effective
-values for the current or next run and displays `max output: unset` when no
-explicit budget applies.
+Selecting changes only the next run's dialect, base URL, and limits: an explicit
+context limit is clamped to the new window, an explicit output budget is sent
+unchanged, and a next-run effort survives only if the new model advertises it. The
+header ratio and `Ctrl-X` update immediately, and `max output: unset` appears when
+no budget applies. `Ctrl-R` refreshes the catalog as `-refresh-models` does, and
+success keeps the highlighted model and filter when they still exist. On resume
+without a model the picker may skip the network, leaving only the recorded model
+until a refresh succeeds.
 
-`Ctrl-R` in the picker performs the same unconditional refresh as
-`-refresh-models`: the footer shows `refreshing models…`, a second `Ctrl-R`
-while the request is in flight is ignored, and closing the picker cancels the
-request without changing the loaded entries. On success the entries are
-replaced in place, preserving the highlighted model and filter when they still
-exist; otherwise the first usable model is highlighted. On failure the loaded
-entries remain and a notice reports the error. Outside the picker, `Ctrl-R`
-keeps its rich/raw meaning. With the picker open, `-ui-json` `ctrl-r` also means
-refresh; the protocol version does not change.
+## File picker
 
-On resume without an explicit model, the picker may skip the network. If the
-catalog is unavailable, it contains only the recorded current model with a
-notice that switching is disabled; resume still works. `Ctrl-R` retries the
-fetch and, on success, expands the picker to the usable catalog and enables
-switching. A recorded model absent from the catalog is still shown and usable
-from the session record; switching to another model requires catalog metadata.
+`Ctrl-O` and `/files` use a Bubbles list over `tools.Workspace.ListDisplayDir`
+because Bubbles' `filepicker` reads directories directly and cannot enforce
+`os.Root`, `.git`, and symlink containment. It lists the current directory, never
+reads contents, and inserts a workspace-relative path; `Esc` leaves the composer
+unchanged.
 
 ## Thinking effort
 
-The public name is *thinking effort*; the provider and catalog call it
-*reasoning effort*. Values are model-specific and come from the effective
-model's normalized catalog entry; there is no harness-wide enum.
+The public name is *thinking effort*; the provider and catalog call it *reasoning
+effort*. Values come from the effective model's normalized catalog entry, so there
+is no harness-wide enum. `F2` opens the picker for the next run while idle (during a
+run it shows the model picker's disabled notice) and lists `provider default`
+first, then the advertised values in canonical order; a model that advertises none
+shows a notice and opens no overlay, and `default` is a clear sentinel, never a
+catalog level.
 
-`F2` opens a picker for the next run while idle. It lists `provider default`
-first, then the effective model's advertised values in canonical order
-(`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, then unknown
-values lexicographically). Selecting a value changes only the next run: the
-active run, the transcript, and existing log events are untouched, and the
-value is recorded in the next `run_start`. Selecting `provider default` clears
-the setting and omits the wire field.
-
-- If the effective model advertises no effort values (including a model whose
-  reasoning is model-fixed), `F2` shows a notice and opens no overlay.
-- During a run, `F2` shows the same disabled notice as the model picker.
-- `default` is a clear sentinel, never a catalog level; a toggle-only or
-  token-budget-only control is not an effort level.
-
-The details overlay (`Ctrl-X`) shows `thinking effort: <value>` or
-`thinking effort: provider default`. A model switch keeps a supported
-next-run value and clears an unsupported one with a notice, as described under
-[model picker](#model-picker).
+A selection changes only the next run and is recorded in the next `run_start`;
+`provider default` clears it so the request omits the wire field.
 
 ## Thinking
 
-Model thinking (provider reasoning) is shown in the transcript as a separate
-`thinking` block, indented under the assistant text it precedes. It is
-display-only and never durable: it is not written to the session log, not
-replayed on resume or fork, and not counted against the response cap. The
-active adapter keeps a bounded in-memory copy of its native continuation
-material (thinking text for Chat, raw reasoning items for Responses) so the
-model can continue a tool round; that copy is not part of the transcript and
-disappears with the run. A resumed or forked session therefore shows only new
-thinking.
+Model thinking (provider reasoning) renders as a display-only block indented under
+the assistant text it precedes, headed `thinking…` until assistant text arrives or
+the response completes and `thinking` afterwards. It is never logged, replayed on
+resume or fork, printed in batch mode, or carried as a protocol event, so a resumed
+or forked session shows only new thinking.
 
-- While the model is still thinking the block header is `thinking…`; it becomes
-  `thinking` when assistant text arrives or the response completes.
-- Thinking blocks are folded by default. A collapsed block shows its header,
-  one elision row with the number of hidden rendered rows, and the last seven
-  rendered rows of the body. The seven-row tail is a count of wrapped rows, so
-  a long provider line can contribute several of them and the collapsed height
-  stays constant while text streams. The tail means a settled block ends on the
-  model's conclusion rather than its opening restatement.
-- `F3` expands every thinking block, and `F3` again collapses them, while idle
-  or during a run. The mode is sticky across turns, runs, retries, streaming
-  deltas, and item trimming; `F3` itself does not write the config file and the
-  sticky mode does not survive a restart; `Ctrl-R`'s rich/raw toggle is
-  likewise in-memory until `/settings` saves an initial preference. The initial
-  mode can be persisted with `/settings` as `ui_expand_all`; a saved preference
-  is applied at startup but later `F3` presses still change only this process.
-  There is no per-block or mouse binding.
-  `F3` is inert while an overlay is open.
-- Expanded thinking is bounded by the 64 KiB per-item display cap. The `CapText`
-  `[truncated N bytes]` marker is part of the body and remains visible in both
-  states. Thinking has no session-log sentence in its elision row because it is
-  never logged; the hidden text exists only in memory.
-- DeepSeek-compatible Chat endpoints stream `reasoning_content`;
-  OpenAI-compatible endpoints may use `reasoning`. The Responses adapter streams
-  `response.reasoning_summary_text.delta` and `response.reasoning_text.delta`,
-  and uses the terminal reasoning item's summary/content as authoritative.
-- A buffered response, or a provider that only reports reasoning on its
-  completed response, is displayed once before the assistant text.
-- Long lines wrap; the block is preformatted and never parsed as markdown.
-- Models and providers that expose no thinking produce no block; nothing
-  changes for them. `Ctrl-R` rich/raw applies only to assistant markdown, so a
-  thinking block renders the same in both modes.
-- The block is not part of `-ui-json` semantic events; it appears in `frame`
-  lines and snapshots like any other transcript text, so the protocol version
-  stays 1. A client that waits for a frame during streaming does not see
-  thinking deltas until it requests `frame`. A collapsed block contributes only
-  its header, elision row, and tail to `lines`, so a client scraping frames for
-  reasoning text sees the tail only until it sends `key` `f3`.
-- Batch mode never prints thinking: `-batch`/`-stream` stdout remains assistant
-  text only, so the one-shot stdout contract is unchanged. Thinking is also not
-  part of `-ui-json` events.
+- Blocks are folded by default: header, one elision row with the hidden rendered-row
+  count, and the body tail described under [tool blocks](#tool-blocks). `F3` expands
+  or collapses every block, is sticky for this process, writes no config file, and is
+  inert while an overlay is open; `/settings` persists the initial mode as
+  `ui_expand_all`.
+- Expanded text is bounded by the per-item display cap in [limits.md](limits.md), and
+  the truncation marker stays visible in both states; the elision row has no
+  session-log sentence because thinking is never logged. The body wraps and is never
+  parsed as markdown, so `Ctrl-R` rich/raw does not apply to it.
+- A model that exposes no thinking produces no block; a buffered response shows its
+  reasoning once, before the text.
+- `-ui-json` sees thinking only in `frame` lines and snapshots, so a collapsed block
+  contributes its header, elision row, and tail until the client sends `key` `f3`.
 
 ## Tool blocks
 
-Each model tool call renders as a folded `tool` transcript block. Its header is
-`tool <name> · <intent> · <status>`, followed by elapsed time when known and by
-the stable result code, truncation, and timeout markers on failure. The model
-supplies the title as the shared `intent` argument: one short sentence naming
-why the call is needed. The intent is display metadata; the session log records
-it only as part of the model response's tool-call arguments, and tools never
-act on it.
+Each tool call renders as one folded block headed
+`tool <name> · <intent> · <status>`, with elapsed time when known and the result
+code, truncation, and timeout markers on failure. The model supplies the title as
+the shared `intent` argument: display metadata, recorded only inside the tool-call
+arguments, never acted on by the tool. A call without one falls back to the raw
+argument preview, and both are sanitized and display-capped
+([limits.md](limits.md)). A collapsed block shows one elision row with the hidden
+rendered-row count and the last rendered rows of the body; an expanded body is
+bounded to a head and the remainder stays in the session log. `F3` folds tool and
+thinking blocks together.
 
-- When a call omits `intent` (a replayed `toolset-v0`/`toolset-v1` call with no
-  recorded intent, or a model that ignores the schema), the header falls back
-  to the raw argument preview, capped at 2 KiB and one line.
-- The header is identical collapsed and expanded. A collapsed block shows the
-  last seven rendered body rows after one elision row; expanded output is
-  bounded to the first 40 lines / 4 KiB and the remainder stays in the session
-  log. `F3` folds tool and thinking blocks together.
-- The intent is normalized for display: surrounding whitespace is trimmed,
-  newlines flatten to spaces, tabs expand, and the value is capped at 200 bytes
-  on a rune boundary. A missing intent never fails a tool call.
+### Delegated calls
 
-### Delegate blocks and subagents
-
-A `delegate` call renders as one folded tool block, like every other call. Under
-its header, each task gets one nested status line:
-`[N] <agent> · <status> · [elapsed] · <model> · effort <value> · <turns> turns · ctx <tokens> · <tokens> tok · cost <estimate>`.
-A read-only call may run up to four children concurrently; rows still appear in
-task-index order. While the call runs the lines come from the live roster; after
-`tool_result` is durable they come from the recorded `details`, so a resumed
-session shows the same table with no claim that anything is live. Reports stay
-in the folded body (one `[task N agent=… status=… session=…]` section each). The
-block is the permanent record; `/agent-hub` is the live view, and a
-`SubagentProgress` event updates both without adding a transcript item.
+A `delegate` call is one folded block with one nested status line per task,
+`[N] <agent> · <status> · [elapsed] · <model> · effort <value> · <turns> turns ·
+ctx <tokens> · <tokens> tok · cost <estimate>`, in task-index order even when the
+tasks run concurrently. The lines come from the live roster while the call runs and
+from the recorded `details` afterwards, so a resumed session shows the same table
+without a claim that anything is live; reports stay in the folded body, one
+`[task N agent=… status=… session=…]` section each. Task, report, and concurrency caps
+are the [SDK's](https://github.com/eddiectc/aharness/blob/main/docs/limits.md).
 
 ### `/agent-hub` roster
 
-`/agent-hub` opens an overlay over the transcript with one row per child:
-`AGENT`, `INTENT`, `MODEL`, `EFFORT`, `ELAPSED`, `CTX`, `TURNS`, `COST`, and
-`STATUS`. Columns drop in a fixed order as the terminal narrows: intent and
-turns below 60 columns, context tokens below 70, model and effort below 80, and
-cost below 90. A row never exceeds the terminal width. Rows are keyed by child
-session and ordered by task index; eight are visible plus the header and a
-`+N more` row, and `Up`/`Down`/`PgUp`/`PgDn`/wheel scroll. A finished child
-keeps its terminal status, turns, duration, and cost for the rest of the run; a
-new run starts with an empty roster and the roster is empty while idle. Elapsed
-is computed by the TUI from its receipt of the start event, so it keeps moving
-during a long tool call and is unaffected by throttled progress. Every string is
-sanitized; the intent is one capped line and the full prompt stays in the
-tool-call arguments. `Esc` closes the overlay without interrupting a child.
+`/agent-hub` opens an overlay with one row per child: `AGENT`, `INTENT`, `MODEL`,
+`EFFORT`, `ELAPSED`, `CTX`, `TURNS`, `COST`, and `STATUS`. Columns drop as the
+terminal narrows (intent and turns below 60, context tokens below 70, model and
+effort below 80, cost below 90), and a row never exceeds the width. Rows are keyed by
+child session and ordered by task index, and `Up`/`Down`/`PgUp`/`PgDn`/wheel scroll.
+A finished child keeps its terminal status for the rest of the run, the roster is
+empty while idle, and elapsed keeps moving because it is computed from the TUI's
+receipt of the start event. `Esc` closes without interrupting a child.
 
 ### Child focus and delegation steering
 
-`Enter` on a roster row opens that child's transcript in place of the parent's
-transcript and focuses the child. The view renders `agent.History` for the
-child session: run headers with terminal status, the delegated task, assistant
-text in the active rich/raw mode, tool calls with a capped output excerpt, and
-notices. The child log is read without taking its session lock, so the view
-works while the child still writes; a torn final line is ignored.
+`Enter` on a roster row replaces the parent transcript with the child's, rendered
+from `agent.History`: run headers, the delegated task, assistant text in the active
+rich/raw mode, tool calls with a capped excerpt, and notices. The log is read
+without the child's lock, so the view works while the child writes and a torn final
+line is ignored ([architecture.md §5](architecture.md#5-host-contracts)).
 
-While the child is running, a composer submission is routed to that child's
-steering channel instead of the parent's. The child consumes it at its next
-turn boundary and records it as a `user_message` with
-`source=subagent-steer`; the view labels that line `delegation steer`, and the
-parent transcript gains no item. Each submission carries a host-assigned
-steering ID, and the SDK echoes it on `SubagentMessageRecorded`, so the view
-drops exactly the line the child accepted even when two submissions have
-identical text. A line sent while a model call is in flight shows as `queued…`
-until that acknowledgement.
+A composer submission while the child runs is steering for that child: recorded as
+a `user_message` with `source=subagent-steer`, labelled `delegation steer`, and
+absent from the parent transcript, with `queued…` shown until the child accepts it.
+A progress or finish boundary replaces the live list with the canonical log
+snapshot, and a finished child opens read-only and refuses steering with a notice.
+`Esc` returns to the parent without interrupting the child, clearing a non-empty
+composer first, and `PgUp`/`PgDn`/wheel scroll the child transcript. The view adds no
+protocol event: `-ui-json` renders it in frame lines with `frame.overlay: none`.
 
-The focused transcript streams while the child runs. The host registers a live
-sink for each delegated child, and the child's own text deltas, tool calls,
-notices, and run start/finish update the view before the parent sees a progress
-event. `SubagentProgress` and `SubagentFinished` still refresh the view from the
-child log; that snapshot is canonical and replaces the live list, and a delta
-for a turn the snapshot already covers is ignored, so text never duplicates.
-Live updates coalesce on the same 33 ms tick as the parent transcript; the view
-never polls a timer. A host that omits the optional child-observation
-capability keeps the snapshot-only view. Registering the sink makes the SDK
-stream every delegated child, so a transport failure after a child's first text
-delta is terminal instead of retried; batch runs register no observer and keep
-the full retry budget. A finished child opens read-only and refuses steering
-with a notice.
-
-`Esc` returns to the parent without interrupting the child; with a non-empty
-composer it first clears the draft, like the parent view. A second `Esc` at the
-parent interrupts as usual. `PgUp`/`PgDn` and the wheel scroll the child
-transcript; scrolling up detaches from the live tail and returning to the
-bottom reattaches. The view adds no protocol event: `-ui-json` sees it in frame
-lines, and `frame.overlay` is `none` because focus is not an overlay.
-
-### `/agents` definitions browser
+### `/agents` browser
 
 `/agents` opens the definitions browser described in
-[commands.md](commands.md#agents). It shows the effective model, effort, and
-`max_turns` with a `*` for an operator override and the provenance of each
-value in the expanded row. `m`, `e`, `t`, `d`, and `r` edit that row's
-override; `Enter` expands or saves, and `Esc` cancels an edit before it closes
-the browser. A save rewrites the active config file atomically and takes effect
-on the next process, so a child in flight is never affected. Malformed files
-appear as `invalid` rows with their parse error. In `-ui-json`, a client may
-send the editing keys as one-character `text` messages; `Enter` saves and `Esc`
-cancels, with no new protocol event or version bump.
+[commands.md](commands.md#agents), with `*` marking an operator override. `Enter`
+expands a row to show the tool list, the first prompt line, each setting's
+provenance, and a malformed file's parse error; `m`, `e`, `t`, `d`, and `r` edit
+that row's override, and `Esc` cancels an edit before closing.
 
 ## Todo widget
 
 The TUI keeps the checklist published by the `todo` tool in a persistent widget
-between the transcript and the composer. It is display-only and is rebuilt from
-the structured `details` of the last successful `todo` result, never by parsing
-the rendered tool output.
+between the transcript and the composer, rebuilt from the structured `details` of
+the last successful `todo` result rather than the rendered tool output.
 
-- While the list is non-empty the widget shows a `todo · <done>/<total> done`
-  header and one row per visible item (`[ ]`, `[~]`, `[x]`). Completed rows are
-  dim, the in-progress row is accented, and each item is one line, truncated to
-  the available width; the full text stays in the tool transcript.
-- The widget is capped at eight rows including its header. When the list is
-  longer, the window includes the in-progress item, or the first pending item
-  when none is in progress, and the header reports the hidden count as
-  `· N more`.
-- An empty list hides the widget. It is also hidden while the slash-command
-  completion menu is open, so the transient menu keeps its rows; the widget
-  returns when the menu closes.
-- A resumed or forked session and a `/resume` switch restore the widget from
-  the last successful `todo` result recorded in the log before the first new
-  run; a follow-up run keeps the list already shown. The transcript's tool block
-  remains the durable history.
-- The widget adds no durable event, protocol event, or protocol version. It
-  appears in `-ui-json` `frame` lines and snapshots like other frame text, so a
-  client scraping frames sees the current checklist.
+- A non-empty list shows a `todo · <done>/<total> done` header and one row per
+  visible item (`[ ]`, `[~]`, `[x]`), completed rows dim, the in-progress row
+  accented, each item one line truncated to the width; the full text stays in the
+  tool transcript.
+- The window keeps the in-progress item, or the first pending one, visible and reports
+  the rest as `· N more`; its height is a display cap ([limits.md](limits.md)). An
+  empty list hides it, as does an open slash-command menu.
+- A resumed or forked session, or a `/resume` switch, restores it from the last
+  successful `todo` result in the log. It adds no durable or protocol event and
+  appears in `-ui-json` frame lines and snapshots like other frame text.
 
 ## Status line and details
 
-The header line shows `effort <value>` for the next run, or `effort default`
-when the provider/model default applies, so the effective effort stays visible
-without opening an overlay.
+The header shows `effort <value>` for the next run, or `effort default`. The status
+line shows `turns N` and `ctx N/L`: `turns` counts successful model responses
+cumulatively and renders `turns N/M` only for an explicit positive `-max-turns`; `ctx`
+is the latest response's input plus output tokens against `L`, the host-resolved
+per-call context window. A model pick updates `L` immediately, the ratio is omitted
+when the window is unknown, and unlimited budgets never render as `0/0`.
 
-The status line shows `turns N` and `ctx N/L` and is refreshed while a run is
-active, not only when it ends. `turns` counts successful model responses
-cumulatively over the session; it shows `turns N/M` only when `-max-turns` is
-explicit and positive. `ctx` is context occupancy — the latest model response's
-input plus output tokens — against `L`, the host-resolved effective per-call
-context window (the catalog `limit.context`, or an explicit
-`-max-context-tokens` clamped to it). The host supplies `L`; the display has no
-catalog fallback, and a model pick updates it immediately. It is deliberately
-not the session-cumulative token sum: that sum includes every tool round and
-retry, grows with each call, and is not comparable to a context window. A
-response that reported no usage leaves the last known occupancy in place
-instead of resetting it. When the context window is unknown the ratio is
-omitted and only the occupancy is shown; unlimited turn budgets never render as
-`0/0`.
-
-The details overlay (`Ctrl-X`) shows the observed `turns: N`,
-`tokens: <human>` (the session-cumulative sum), `ctx: <human>/<limit>`, and
-`cost: $<micro-USD>` under the session block, the
-effective `thinking effort: <value>` (or `provider default`), and the
-configured limits under
-configuration: `max turns: unlimited` (or the integer), `total tokens:
-unlimited` (or a human token count), `run timeout: none` (or a duration),
-`model timeout: none` (or a duration), and `http timeout: <duration>`. Run and
-model timeouts never render `0` as a duration, because `0` means "no harness
-deadline"; the HTTP timeout is always positive and always shown.
-
-A resumed or forked session shows the new run's effective values, which are
-unlimited by default; historical recorded budgets are not shown as the current
-configuration. The cost line is an observational catalog-price estimate and
-is marked `(incomplete)` when any model response lacked a price. No new key or
-`-ui-json` protocol version is involved; frames carry the same labels.
-
-Usage objects in `-ui-json` frames may carry the additive optional members
-`cached_input_tokens`, `cache_write_input_tokens`,
-`reasoning_output_tokens`, `reported`, and `cost_micro_usd`; older consumers
-ignore them and the protocol version stays 1.
+The details overlay (`Ctrl-X`) shows the observed `turns`, cumulative `tokens`, `ctx`,
+and observational `cost`, the effective `thinking effort`, and the configured
+`max turns`, `total tokens`, `run timeout`, `model timeout`, and `http timeout`. Run
+and model timeouts render `none` rather than `0` ("no harness deadline"), a resumed or
+forked session shows the new run's effective values, and the cost line is marked
+`(incomplete)` when a response lacked a price. `-ui-json` usage objects may carry the
+additive `cached_input_tokens`, `cache_write_input_tokens`, `reasoning_output_tokens`,
+`reported`, and `cost_micro_usd` members with no version change.
 
 ## `-ui-json` protocol v1
 
-Every stdin line is one JSON object with `"v":1` and `"type"`. Unknown fields
-are ignored; an unknown version, type, or key is a protocol error (exit 2).
-Commands: `text`, `key`, `paste`, `resize`, `wait`, `frame`, `snapshot`,
-`quit`; EOF is equivalent to `quit`. Slash commands and their autocomplete are
-ordinary composer text: send `text` followed by `key` `enter` (or `tab`,
-`up`, `down`, `esc`) to drive them, with no protocol change. See
-[commands.md](commands.md#-ui-json-mapping). Keys accepted by `key` are the
-shipped key table plus `enter`, `esc`, `up`, `down`, `left`, `right`, `home`,
-`end`, `pgup`, `pgdown`, `backspace`, `delete`, `tab`, `shift-tab`, `ctrl-c`,
-`ctrl-d`, `ctrl-l`, `ctrl-u`, `ctrl-w`, `ctrl-a`, `ctrl-e`, `ctrl-k`, `ctrl-p`,
-`ctrl-o`, `ctrl-r`, `ctrl-t`, `ctrl-g`, `ctrl-x`, `f1`, `f2`, `f3`, `f4`,
-`shift-enter`, and `alt-enter`. The external editor (`f4`) is unavailable in
-`-ui-json` and reports a notice; it needs a real terminal.
+Every stdin line is one JSON object with `"v":1` and `"type"`; unknown fields are
+ignored, and an unknown version, type, or key is a protocol error (exit 2). Commands:
+`text`, `key`, `paste`, `resize`, `wait`, `frame`, `snapshot`, `quit`, with EOF
+equivalent to `quit`. `key` accepts every key in the `F1` overlay plus `left`, `right`,
+`home`, `end`, `backspace`, `delete`, `tab`, `shift-tab`, `shift-enter`, and
+`alt-enter`; the external editor (`f4`) is unavailable here and reports a notice.
+Slash commands are ordinary composer text ([commands.md](commands.md#-ui-json-mapping)).
 
 Output lines:
 
-- `frame`: `seq`, `width`, `height`, `state`, `overlay`, `cursor`
-  (`row`, `col`, `visible`, `shape`), `lines` (exactly height entries), `styles`
-  (coalesced `row`, `col`, `width`, `text`, `fg`, `bg`, `attrs`), `images`
-  (`id`, `path`, `alt`, `row`, `col`, `width`, `height`, `protocol`),
-  `color_profile`, `no_color`, `image_protocol`, `styles_truncated`. `overlay`
-  is `none`, `help`, `details`, `prompt`, `request`, `table`, `file`, `model`,
-  `effort`, `session`, `image`, `agent-hub`, `agents`, or `settings`. The list
-  is additive: a client must treat an unknown overlay string as opaque rather
-  than as a protocol error. Frames contain no ANSI and no
-  raw image bytes.
+- `frame`: `seq`, `width`, `height`, `state`, `overlay`, `cursor`, `lines` (exactly
+  height entries), `styles` (coalesced `row`, `col`, `width`, `text`, `fg`, `bg`,
+  `attrs`), `images`, `color_profile`, `no_color`, `image_protocol`, and
+  `styles_truncated`. `overlay` is `none`, `help`, `details`, `prompt`, `request`,
+  `table`, `file`, `model`, `effort`, `session`, `image`, `agent-hub`, `agents`, or
+  `settings`; the list is additive and an unknown value is opaque, not an error.
+  Frames carry no ANSI and no raw image bytes.
 - `event`: `run_started`, `run_finished`, `tool_started`, `tool_finished`,
-  `model_changed`, `notice`, `error`, with the fields described in this
-  section.
-  `run_started` and `model_changed` carry an optional `thinking_effort` field
-  for the effective value; an omitted field means the provider default.
-  Selecting an effort with `F2` emits a `notice` with
-  `kind: "thinking_effort"`. `tool_started` and `tool_finished` carry an
-  optional `subagent_tasks` array for a `delegate` call (agent, intent, session,
-  model, effort, status, turns, context tokens, usage, cost). No new event type
-  is introduced, and the protocol version stays 1; clients that do not know the
-  optional fields ignore them.
-- `snapshot`: a deterministic SVG of the current `x/vt` cells at the current
-  frame `seq`; it contains no timestamps, random IDs, durations, or ANSI, and
-  does not emit an extra frame.
-- `error`: `code` and `message` for protocol/UI errors; a wait timeout emits
-  `error{code:"timeout"}` and leaves the run active.
+  `model_changed`, `notice`, and `error`. `run_started` and `model_changed` carry an
+  optional `thinking_effort`, tool events carry an optional `subagent_tasks` array
+  for a `delegate` call, an effort selection emits a `notice` with kind
+  `thinking_effort`, and a session switch emits one with kind `session`. No new event
+  type is introduced, and clients ignore unknown optional fields.
+- `snapshot`: a deterministic SVG of the current `x/vt` cells at the current frame
+  `seq`, with no timestamps, random IDs, durations, or ANSI. `error`: `code` and
+  `message`; a wait timeout emits `error{code:"timeout"}` and leaves the run active.
 
-Frames are emitted after every view-changing command, after a completed
-`wait`, and after each non-text semantic transition. Text deltas update the
-model but do not emit a frame; request `frame` to snapshot streaming text.
-Collapsed thinking and tool blocks contribute fewer `lines` to a frame; send
-`key` `f3` to expand them. The todo widget also contributes frame `lines` when
-the checklist is non-empty; it emits no semantic `event`. This is a
-display-only content change, not a new event or protocol version.
-Frames and snapshots are deterministic for a fixed provider/tool response,
-size, color profile, and image protocol: `-ui-json` hides the session ID,
-elapsed time, and durations. `-ui-json` always uses glyph image mode.
+Frames are emitted after every view-changing command, after a completed `wait`, and
+after each non-text semantic transition; text deltas do not emit one, so request
+`frame` to snapshot streaming text. Frames and snapshots are deterministic for a
+fixed provider/tool response, size, color profile, and image protocol: `-ui-json`
+hides the session ID, elapsed time, and durations.
 
-The `-ui-json` driver frames off its own command handling. Bubble Tea exposes
-no renderer-complete barrier, and the `x/vt` emulator is written from the
-renderer's goroutine, so a completed command does not prove the cells are
-current. The driver therefore gives the renderer a short settle (30 ms) before
-it reads a frame; this is a frame-flush aid only, is reached only with
-`-ui-json`, and changes no durable state. Interactive terminals never take this
-path, and frame tests use the same deterministic settle.
-
-The app never closes the display channel. When the runner returns, the host
-stops its display callback and the app drains whatever events are already
-buffered, in order, before it completes the run. A stale event carrying another
-run's SDK run ID is discarded, so a previous run cannot change the current
-header.
-
-`-ui-size WxH` sets the initial frame size (default `100x30`, valid
-`20x5`–`500x200`); `resize` is bounded the same way.
-
-## Caps
-
-| Cap | Value | Behavior |
-|---|---|---|
-| Task/steering message | 64 KiB | Longer is rejected with a notice; the run continues. |
-| External editor draft | 64 KiB | `F4` reads the edited temp file under the composer cap; an over-cap or failed edit leaves the composer unchanged. Available while idle only. |
-| Transcript items / text | 20,000 / 16 MiB | Oldest UI items are dropped with an "older history omitted" marker; the log is unchanged. |
-| Assistant text per item | 64 KiB | Truncation marker; the canonical response remains in the log. |
-| Thinking text per item | 64 KiB | Provider reasoning is display-only and never logged; the marker is shown, and a resumed session has no prior thinking. Collapsed blocks show the last seven rendered rows; expanded blocks show the full text up to this cap. |
-| Markdown source / blocks / nesting | 64 KiB / 4,000 / 16 | Over-cap input falls back to plain text with a notice. |
-| Table columns / rows | 12 / 500 | Column width cap 40 cells; the overlay scrolls horizontally. |
-| File picker entries / filter | 2,000 per directory / 64 bytes | No recursion, no file contents; `.git`, symlinks, control-character names, and escapes are rejected. |
-| Resume picker sessions / head | 100 per workspace / 64 events | Same canonical workspace only; the active session is excluded; unreadable or corrupt logs are skipped; the first-message preview is sanitized and cut to 160 bytes. |
-| Overlay stack | 4 | Deeper requests close the oldest overlay. |
-| System prompt view | SDK-recorded prompt, whole | `/prompt` shows the recorded text and reports when the SDK's record cap truncated it; long lines wrap. |
-| Model exchange view | 32 KiB head + 32 KiB tail per payload | `/request` marks the omitted bytes of the displayed payload; long lines wrap. The log keeps the full event. |
-| Agent roster | 8 rows, 200-byte intent | Header and `+N more` row; scrolls; every string sanitized. |
-| Agent settings editor | 200 bytes | One inline routing value; longer input is refused with a footer error, and an empty value clears the override. |
-| Config settings editor | 512 bytes | One config-file value; longer input is refused, values use the startup validation rules, and `web_fetch_key` is masked and never rendered. |
-| Delegated tasks per call | 4 | Each renders one nested row; a call produces exactly one tool block. |
-| Child report per task | 16 KiB | Included in the folded block body; the child log keeps the full text. |
-| Thinking effort values | 16 per model, 32 bytes each | Catalog-normalized; `F2` lists `provider default` plus the model's canonical values and opens no overlay when none exist. |
-| Image file / dimensions / pixels | 8 MiB / 4096×4096 / 16 Mi | PNG/JPEG/GIF only; `DecodeConfig` runs before decode. |
-| Images per transcript / thumbnail | 32 / 60×20 cells | Older images fall off; thumbnails are half-block glyphs. |
-| Tool output | 4 KiB or 40 lines expanded | Collapsed tool blocks show the last seven rendered rows of the full result; expanded output is bounded to the first 40 lines / 4 KiB, and the remainder stays in the log. |
-| Todo widget | 8 rows | One header plus up to seven one-line items; the window keeps the in-progress (or first pending) item visible and reports hidden items as a count. Hidden when the list is empty, there is no room, or the slash-command menu is open. |
-| Tool intent title | 200 bytes | Shared display-only `intent` argument, trimmed and cut on a rune boundary; a missing intent falls back to the 2 KiB raw argument preview and never fails the call. |
-| Transcript fold | 7 rendered rows | Thinking and tool bodies are collapsed by default: header, one elision row with the hidden rendered-row count, and the last seven wrapped rows. `F3` expands all folds; the mode is sticky for this process, and `/settings` can persist the initial mode as `ui_expand_all`. |
-| Tool arguments preview | 2 KiB | Full arguments remain in `model_response`. |
-| Input history | 100 entries | In-memory only. |
-| Minimum terminal | 40×10 | Smaller shows a resize message and keeps quit/resize keys. |
-| Frame coalescing | 33 ms | Text deltas coalesce (~30 fps); state changes flush immediately. |
-| Escape timeout | 50 ms | Bare Esc; modified sequences never interrupt. |
-| Mouse wheel | 3 lines per notch | Scrolls the transcript, or the top overlay when one is open. Clicks, releases, motion, and horizontal wheel events are ignored; focus reporting stays off. Terminal selection and middle-click paste need the terminal's `Shift` bypass; see [Terminal safety](#terminal-safety-and-images). |
-| Display queue | 256 events | Backpressure; display text deltas are not durable. The app never closes the channel; after the runner returns it drains the buffer and discards events from another SDK run ID. |
-| `-ui-json` command line / text | 1 MiB / 64 KiB | Longer is a protocol error. |
-| `-ui-json` frame line | 1 MiB | Over-cap emits `frame_too_large` and continues. |
-| `-ui-json` style spans | 16,000 or 256 KiB | Excess styles are dropped and `styles_truncated` is true; `lines` stay complete. |
-| `-ui-json` wait timeout | 30 s default, 300 s max | Timeout emits an error and does not exit. |
-| `-ui-json` snapshot | 512 KiB SVG | Over-cap emits `snapshot_too_large` and continues. |
-
-The file picker is built on Bubbles' list/filter component rather than
-Bubbles' `filepicker`, because `filepicker` reads directories directly and
-cannot enforce `os.Root`, `.git`, and symlink containment. It lists only
-`tools.Workspace.ListDisplayDir` entries and inserts a workspace-relative path;
-it never reads file contents.
+The driver frames off its own command handling, not a renderer barrier: Bubble Tea
+exposes none and `x/vt` is written from the renderer's goroutine, so the driver waits
+out the frame settle in [limits.md](limits.md) before reading a frame. The app never
+closes the display channel: when the runner returns, the host stops its display
+callback and drains the buffered events in order, discarding a stale event from
+another run ID. `-ui-size WxH` sets the initial frame size (default `100x30`);
+`resize` and the accepted range are bounded in [limits.md](limits.md).
 
 ## Terminal safety and images
 
-All model/tool/session/error text passes through the TUI sanitizer before it
-reaches Glamour, Bubbles, or a transcript cell: invalid UTF-8 is repaired,
-tabs expand to four spaces, C0/C1 controls and ESC become visible glyphs,
-bidi overrides/isolates are stripped, and OSC/CSI/DCS text cannot become a
-control. Raw HTML is never interpreted. Glamour's OSC 8 hyperlinks are
-stripped. Tool output is preformatted and never parsed as markdown; the same
-holds for thinking text.
+All model/tool/session/error text passes through the TUI sanitizer: invalid UTF-8 is
+repaired, tabs expand, C0/C1 controls and ESC become visible glyphs, bidi overrides
+and isolates are stripped, and OSC/CSI/DCS text cannot become a control. Raw HTML is
+never interpreted, Glamour's OSC 8 hyperlinks are stripped, and tool output and
+thinking text are preformatted.
 
-Images are display-only workspace files resolved with `os.Root`,
-`filepath.IsLocal`, no `.git` or symlink components, and no network fetch.
-SVG/XML and unsupported formats become placeholders. ntcharts `picture`
-renders transcript thumbnails as half-block glyphs; the viewer can use Kitty
-when `ACODE_IMAGE_PROTOCOL=auto|kitty` selects it. `glyph` and `none` force
-the universal fallback or placeholders; `-ui-json` always forces glyph. Kitty
+Images are display-only workspace files resolved with `os.Root`, `filepath.IsLocal`,
+no `.git` or symlink components, and no network fetch; SVG/XML and unsupported formats
+become placeholders. ntcharts `picture` renders thumbnails as half-block glyphs, the
+viewer can use Kitty when `ACODE_IMAGE_PROTOCOL=auto|kitty` selects it, `glyph` and
+`none` force the fallback or placeholders, `-ui-json` always forces glyph, and
 placements are cleared on viewer close, resize, and exit.
 
-Bubble Tea/ultraviolet owns raw mode, the alternate screen, bracketed paste,
-resize, cursor, and restoration.
-
-Mouse reporting is limited to the scroll wheel. `View()` selects Bubble Tea cell
-motion (SGR button events), which reports clicks, releases, and wheel notches but
-not hover; clicks, releases, and motion are ignored. The wheel scrolls the
-transcript by three lines per notch, so `PgUp`/`PgDn` remain the keyboard
-equivalent. Scrolling up detaches the live tail and scrolling back to the bottom
-re-attaches it. With an overlay open the wheel scrolls that overlay instead: the
-help, details, prompt, and request panels scroll their text, the table moves its
-row cursor, and the file/model/effort pickers move their selection. Horizontal
-wheel events do nothing. Terminal focus reporting stays disabled.
-
-No terminal mouse mode reports only the wheel, so enabling the wheel stops the
-terminal from selecting text and handling middle-click paste itself. The
-terminal's own selection, copy, and paste stay reachable through its bypass
-modifier: hold `Shift` while dragging (Option-drag in iTerm2) to select and copy
-with the native terminal selection, and `Shift`+middle-click to paste.
-`Ctrl+Shift+V` (or the terminal's own paste binding) always works because
-bracketed paste remains enabled. An empty transcript lists these tips; the help
-overlay repeats them.
+Bubble Tea owns raw mode, the alternate screen, bracketed paste, resize, cursor, and
+restoration. Mouse reporting is limited to the scroll wheel: clicks, releases, motion,
+and horizontal wheel events are ignored, and focus reporting stays off. The wheel
+capture takes the terminal's own selection, so hold `Shift` while dragging (Option-drag
+in iTerm2) to select and copy, and `Shift`+middle-click or `Ctrl+Shift+V` to paste.

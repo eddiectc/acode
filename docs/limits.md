@@ -88,6 +88,8 @@ contract. See [tui.md](tui.md) for shipped behavior and
 | Widget list / file picker entries | 1,000 / 2,000 per directory | File picker does not recurse, read contents, follow symlinks, or list `.git`; filter query is 64 bytes. |
 | Resume picker sessions / head | 100 per workspace / 64 events | Same canonical workspace only; the active session is excluded; unreadable, linked, or corrupt logs are skipped; each row preview is sanitized and cut to 160 bytes. |
 | Overlay stack | 4 | Deeper requests close the oldest non-modal overlay with a notice. |
+| Agent roster | 8 rows | Header and a `+N more` row; scrolls; every cell is sanitized and truncated to its column or the terminal width. |
+| Agent settings editor | 200 bytes | One `agent_overrides` value; longer input is refused with a footer error, and an empty value clears the override. |
 | System prompt view | SDK-recorded prompt, whole | `/prompt` shows the recorded text; when the SDK's record cap truncated it, the header says so. Long lines wrap at the overlay width. |
 | Model exchange view | 64 KiB per payload (32 KiB head + 32 KiB tail) | `/request` keeps both ends of the pretty-printed recorded payload before sanitization and inserts one `[omitted N bytes]` marker counting bytes of that payload. The session log keeps the full event. Long lines wrap. |
 | Config settings editor | 512 bytes | One config-file value; longer input is refused, values use the startup validation rules, and `web_fetch_key` is masked and never rendered. |
@@ -98,11 +100,12 @@ contract. See [tui.md](tui.md) for shipped behavior and
 | Tool output | 4 KiB or 40 lines expanded | Collapsed shows the last seven rendered rows of the full result; expanded output never exceeds the logged tool-result cap. |
 | Transcript fold | 7 rendered rows | Thinking and tool bodies are collapsed by default to the header, an elision row with the hidden rendered-row count, and the tail. `F3` expands all folds; the mode is sticky and display-only for this process, and `/settings` can persist the initial mode as `ui_expand_all`. |
 | Todo widget | 8 rows | One header plus up to seven one-line items, each truncated to the available width. The window keeps the in-progress (or first pending) item visible and reports hidden items as a count. Hidden when the list is empty, there is no room, or the slash-command menu is open. Derived from the last successful `todo` result's `details`; not a new durable event. |
-| Tool intent title | 200 bytes | Shared display-only `intent`, trimmed and cut on a rune boundary. A missing intent falls back to the raw argument preview and never fails a call. |
+| Tool intent title | 200 bytes | Shared display-only `intent`, trimmed and cut on a rune boundary; tool blocks and the `/agent-hub` roster both use it. A missing intent falls back to the raw argument preview and never fails a call. |
 | Tool arguments preview | 2 KiB or 8 lines | Full arguments remain in `model_response`/the log. |
 | Input history | 100 entries | In-memory only; not persisted. |
 | Minimum terminal size | 40×10 | Below shows a resize message; quit/resize keys still work. |
 | Frame coalescing | 33 ms | Text deltas coalesce (~30 fps); state changes flush immediately. |
+| `-ui-json` frame settle | 30 ms | The driver waits this long after a command before reading a frame, because Bubble Tea exposes no renderer barrier; reached only with `-ui-json` and with no durable effect. |
 | Escape timeout | 50 ms | A lone Esc is delivered; modified sequences never interrupt. |
 | Mouse wheel | 3 lines per notch | Scrolls the transcript, or the top overlay when one is open. Clicks, releases, motion, and horizontal wheel events are ignored; focus reporting stays off. Terminal text selection and middle-click paste need the terminal's `Shift` bypass; see [tui.md](tui.md). |
 | Display queue | 256 events | Backpressure; text deltas are not durable. |
@@ -141,8 +144,10 @@ constant:
 - Number of tool calls per response; bounded by the response cap.
 - Number of events per session; bounded by the turn, token, and time budgets
   only when those explicit flags are set.
-- Thinking effort values; bounded by the model's normalized catalog list (at
-  most 16 values, 32 bytes each). No run budget is added.
+- Thinking effort values; bounded by the model's normalized catalog list, whose
+  value and byte caps are the SDK's
+  ([SDK limits](https://github.com/eddiectc/aharness/blob/main/docs/limits.md)).
+  No run budget is added.
 - Number of concurrent sessions; one process holds one active session and one
   lock at a time. `/new` and `/resume` replace the active session while idle;
   there is no global cap.

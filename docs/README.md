@@ -44,13 +44,13 @@ for status, deviations, and verification notes.
 | [architecture.md](architecture.md) | App package layout, host composition, modes, exit codes, and the SDK boundary |
 | [configuration.md](configuration.md) | Flag > environment > config file > default precedence, the JSON config file, and environment variables |
 | [coding-standard.md](coding-standard.md) | Normative Go practice, dependencies, testing, and §8 review gates |
-| [commands.md](commands.md) | Shipped slash commands, autocomplete, arguments, and `-ui-json` mapping |
+| [commands.md](commands.md) | Shipped slash commands: invocation, autocomplete, arguments, key equivalents, scope, and `-ui-json` mapping |
 | [container.md](container.md) | The compose stack and its launcher scripts, the published image, mounts, user mapping, secrets, network modes, image builds, and the release CI |
 | [definition-of-done.md](definition-of-done.md) | Normative completion checklist for every change |
 | [limits.md](limits.md) | CLI, input, TUI, and `-ui-json` caps; SDK-owned caps link to aharness |
 | [release.md](release.md) | Branch model, commit wording, pull-request gating, and release tagging |
 | [testing-strategy.md](testing-strategy.md) | Config, integration, TUI/headless, fuzz, and manual smoke layers |
-| [tui.md](tui.md) | Shipped TUI modes, keys, protocol, caps, and verification status |
+| [tui.md](tui.md) | Shipped TUI modes, keys, display behavior, `-ui-json` protocol, and verification status |
 | [writing-standard.md](writing-standard.md) | Normative prose: one home per fact, line budgets, code comments, commits, issues, and pull requests |
 
 ### Build plans
