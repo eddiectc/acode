@@ -99,33 +99,17 @@ unknown and lets the provider decide. A catalog cached before it recorded image
 capabilities reads every model as text-only, so refresh it with
 `-refresh-models` after upgrading.
 
-The composer is multi-line: `Enter` submits, `Shift-Enter` or `Alt-Enter`
-inserts a newline, and `F4` edits the draft in `$VISUAL` or `$EDITOR`. While a
-run is active, `Enter` submits steering for the running agent, `Esc` interrupts
-the in-flight operation, and a second `Ctrl-C` cancels the run. `Ctrl-D` quits.
-The mouse wheel scrolls the transcript; because the TUI captures the mouse,
-use `Shift`+drag to select text and `Shift`+middle-click or `Ctrl+Shift+V` to
-paste.
+The composer is multi-line: `Enter` submits or steers, `Shift-Enter` or
+`Alt-Enter` inserts a newline, `Ctrl-D` quits, and `F4` edits the draft in
+`$VISUAL` or `$EDITOR`. The mouse wheel scrolls the transcript; because the TUI
+captures the mouse, use `Shift`+drag to select text and `Shift`+middle-click or
+`Ctrl+Shift+V` to paste.
 
-| Key | Action |
-|---|---|
-| `Enter` / `Shift-Enter` | submit or steer / insert a newline |
-| `Esc` | close an overlay; otherwise interrupt the operation or clear the composer |
-| `Ctrl-C` | during a run: interrupt, then cancel; idle: clear the composer |
-| `Ctrl-D` | quit |
-| `Ctrl-P` / `F2` | model picker / thinking-effort picker |
-| `Ctrl-O` / `Ctrl-G` / `Ctrl-T` | file picker / image viewer / table overlay |
-| `Ctrl-R` / `F3` | rich or raw rendering / fold or expand blocks |
-| `F1` / `Ctrl-X` | help / session and terminal details |
-| `F4` | edit the composer in `$VISUAL` or `$EDITOR` |
-
-Typing `/` opens a filtered command menu; `Tab` completes the highlighted
-command and `Enter` runs it. The commands are `/help`, `/model`, `/effort`,
-`/provider`, `/details`, `/prompt`, `/request`, `/settings`, `/agents`,
-`/agent-hub`, `/new`, `/resume`, `/files`, `/table`, `/image`, `/rich`, `/raw`,
-`/repaint`, `/refresh`, `/interrupt`, `/cancel`, and `/quit`. Unrecognized
-`/text` is sent as a normal message. The full reference is in
-[commands.md](docs/commands.md).
+`F1` lists every key and slash command, and it is the shipped truth for both.
+Typing `/` opens a filtered command menu; `Tab` completes the highlighted command
+and `Enter` runs it, while unrecognized `/text` is sent as a normal message.
+[tui.md](docs/tui.md) covers the display surfaces and
+[commands.md](docs/commands.md) the command reference.
 
 ## Sessions, resume, and fork
 
@@ -371,8 +355,8 @@ base ([container.md §6](docs/container.md#6-building-the-image)).
 | [configuration.md](docs/configuration.md) | Flag > environment > config file > default precedence, the JSON config file, and environment variables |
 | [limits.md](docs/limits.md) | CLI, input, TUI, and `-ui-json` caps; links to the SDK's limits |
 | [coding-standard.md](docs/coding-standard.md) | Normative Go practice, dependencies, testing, and §8 review gates |
-| [tui.md](docs/tui.md) | TUI modes, keys, `-ui-json` protocol, and caps |
-| [commands.md](docs/commands.md) | Slash-command reference: syntax, autocomplete, arguments, key equivalents, idle/run behavior, `-ui-json` mapping, and caps |
+| [tui.md](docs/tui.md) | TUI modes, keys, display behavior, and the `-ui-json` protocol |
+| [commands.md](docs/commands.md) | Slash-command reference: invocation, autocomplete, arguments, key equivalents, scope, and `-ui-json` mapping |
 | [container.md](docs/container.md) | Container image, release binaries, mounts, UID/GID mapping, secrets, network modes, the compose stack, and the release CI |
 | [testing-strategy.md](docs/testing-strategy.md) | Config, integration, TUI/headless, fuzz, and manual smoke checks |
 | [definition-of-done.md](docs/definition-of-done.md) | Completion checklist for every change |
