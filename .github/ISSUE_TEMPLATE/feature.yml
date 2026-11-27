@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose behavior the agent cannot deliver today.
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you cannot do today, and what it costs you.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: What you do instead. "None" is a valid answer.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: What done looks like
+      description: The behavior you would accept, not the design.
+    validations:
+      required: true

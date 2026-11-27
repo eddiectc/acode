@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a crash, a wrong result, or a broken key or flag.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste a provider token, a full environment, or a whole session
+        log. A line or two around the failure is enough, with tokens and local
+        paths redacted.
+  - type: input
+    id: version
+    attributes:
+      label: acode version
+      description: The output of `acode -version`.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and terminal
+      description: The operating system and terminal, and whether you ran the TUI, `-batch`, `-ui-json`, or the container image.
+      placeholder: Linux 6.16, kitty 0.44, TUI
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Provider and model
+      description: The `-provider` and `-model` in use, or the values recorded in the session.
+      placeholder: opencode-go / <model-id>
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Command or keys
+      description: The exact command line, or the keys pressed from a known starting state.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: Include the error text, and say whether it happened once or every time.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: The stderr or session-log lines around the failure, redacted.
+      render: text
+    validations:
+      required: true
