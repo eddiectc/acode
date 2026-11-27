@@ -392,3 +392,6 @@ repository; acode contains no loop, tool, or provider logic.
 keep history linear, and merge only with `make dod` green. A release is an
 annotated `vX.Y.Z` tag on a green `main` commit, which publishes the container
 image. See [release.md](docs/release.md).
+
+AI agents author and review much of this repository; a person is accountable for
+every merge, and the rules and gates above apply unchanged.
