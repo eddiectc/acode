@@ -42,9 +42,6 @@ loop invariants, coding policy, coordination guidance, and the agent catalog —
 is the SDK's default (`prompt-v3`) rendered per session, so no prompt text is
 duplicated in this repository.
 
-The module is `github.com/eddiectc/acode`. It depends on the tagged aharness
-release pinned in `go.mod`.
-
 ### Workspace instructions
 
 On a **new** session only, acode reads the workspace's root `AGENTS.md` through
@@ -289,7 +286,8 @@ existing located state directory when needed.
 | 130 | Interrupted by a signal or an explicit cancel. |
 
 The mapping lives in `cmd/acode`; the SDK returns typed `Result.Status` values
-and does not choose an exit code.
+and does not choose an exit code. Batch writes final assistant text to stdout
+and diagnostics to stderr.
 
 ## 8. Limits and dependencies
 

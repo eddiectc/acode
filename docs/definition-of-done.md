@@ -42,7 +42,7 @@ reference, never the dated record.
       concurrency model, and it does not add a second durable event type.
 - [ ] **CLI/TUI compatibility.** New flags, environment variables, config keys,
       slash commands, protocol fields, and exit codes are documented in the
-      current reference and the README.
+      current reference, and the README feature map links to it.
 - [ ] **Pinned SDK.** `go.mod` pins a released aharness version.
 - [ ] **Errors and pairing.** Errors wrap with `%w` and are classified with
       `errors.Is`/`errors.As`; every tool call has exactly one result.
@@ -77,11 +77,11 @@ reference, never the dated record.
       verification.
 - [ ] **Frozen records.** A dated plan or research document is not rewritten for
       later behavior; the current reference carries the shipped truth.
-- [ ] **User-facing surface.** A user-visible change updates the README
-      feature description, examples, or CLI contract as applicable.
+- [ ] **User-facing surface.** A user-visible change updates the README feature
+      map or quick start when it adds or alters a product area.
 - [ ] **New interfaces.** New flags, environment variables, config keys, exit
       codes, slash commands, and protocol fields are documented in the current
-      reference and the README where users see them.
+      reference, which the README feature map links to.
 - [ ] **Honest docs.** Documented behavior matches exercised behavior; pending
       checks and environment limits are named, not implied.
 

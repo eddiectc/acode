@@ -47,6 +47,7 @@ for status, deviations, and verification notes.
 | [commands.md](commands.md) | Shipped slash commands: invocation, autocomplete, arguments, key equivalents, scope, and `-ui-json` mapping |
 | [container.md](container.md) | The compose stack and its launcher scripts, the published image, mounts, user mapping, secrets, network modes, image builds, and the release CI |
 | [definition-of-done.md](definition-of-done.md) | Normative completion checklist for every change |
+| [isolation.md](isolation.md) | The execution boundary, the bubblewrap launcher, and when to use a container or VM |
 | [limits.md](limits.md) | CLI, input, TUI, and `-ui-json` caps; SDK-owned caps link to aharness |
 | [release.md](release.md) | Branch model, commit wording, pull-request gating, and release tagging |
 | [testing-strategy.md](testing-strategy.md) | Config, integration, TUI/headless, fuzz, and manual smoke layers |
