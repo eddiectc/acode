@@ -15,9 +15,10 @@ host composition, modes, and exit codes are in
 [docs/configuration.md](docs/configuration.md); the TUI and protocol are in
 [docs/tui.md](docs/tui.md) and [docs/commands.md](docs/commands.md); caps live
 in [docs/limits.md](docs/limits.md); the testing strategy is in
-[docs/testing-strategy.md](docs/testing-strategy.md); the container image and
-the branch, commit, and release process are in
-[docs/container.md](docs/container.md) and [docs/release.md](docs/release.md).
+[docs/testing-strategy.md](docs/testing-strategy.md); the execution boundary and
+the container image are in [docs/isolation.md](docs/isolation.md) and
+[docs/container.md](docs/container.md); the branch, commit, and release process
+are in [docs/release.md](docs/release.md).
 Every change verifies
 against [docs/definition-of-done.md](docs/definition-of-done.md). The
 [documentation map](docs/README.md) explains where reference, plans, and

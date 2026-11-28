@@ -119,8 +119,10 @@ Every key is validated even when a higher layer wins, so a broken file is
 reported instead of hiding behind a flag.
 
 The agent directory is derived, not configured. Operator definitions live in
-`<state-dir>/agents/*.md`, replacing a role shipped with acode by exact name;
-there is no `-agents-dir` flag, environment
+`<state-dir>/agents/*.md`, replacing a role shipped with acode by exact name:
+`explore`, `researcher`, `reviewer`, `implementer`, or `task`. A definition is a
+strict `key: value` header, a `---` line, and a Markdown prompt body, as in the
+shipped files. There is no `-agents-dir` flag, environment
 variable, or config key. The state directory is already the harness-owned,
 operator-scoped location, and a workspace-level agent directory would be
 repository-controlled prompt material with no trust model. Moving the state

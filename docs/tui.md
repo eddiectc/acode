@@ -23,9 +23,10 @@
 
 `-interactive` is gone; it is an unknown-flag error. Selection order, exit codes,
 and eager session creation are [architecture.md §4](architecture.md#4-modes-and-selection)
-and [§7](architecture.md#7-exit-codes). The TUI and `-ui-json` always stream
-(`-stream=false` is a config error), auto-submit a seeded `-task` after the first
-frame, and never print final text to stdout.
+and [§7](architecture.md#7-exit-codes). In batch, `-stream` opts into
+assistant-text streaming. The TUI and `-ui-json` always stream (`-stream=false`
+is a config error), auto-submit a seeded `-task` after the first frame, and
+never print final text to stdout.
 
 ## Keys
 
@@ -215,12 +216,14 @@ the last successful `todo` result rather than the rendered tool output.
 
 ## Status line and details
 
-The header shows `effort <value>` for the next run, or `effort default`. The status
-line shows `turns N` and `ctx N/L`: `turns` counts successful model responses
-cumulatively and renders `turns N/M` only for an explicit positive `-max-turns`; `ctx`
-is the latest response's input plus output tokens against `L`, the host-resolved
-per-call context window. A model pick updates `L` immediately, the ratio is omitted
-when the window is unknown, and unlimited budgets never render as `0/0`.
+The header shows the session ID prefix (`session --` before one is known, and
+always in `-ui-json`, which hides it) and `effort <value>` for the next run, or
+`effort default`. The status line shows `turns N` and `ctx N/L`: `turns` counts
+successful model responses cumulatively and renders `turns N/M` only for an
+explicit positive `-max-turns`; `ctx` is the latest response's input plus output
+tokens against `L`, the host-resolved per-call context window. A model pick
+updates `L` immediately, the ratio is omitted when the window is unknown, and
+unlimited budgets never render as `0/0`.
 
 The details overlay (`Ctrl-X`) shows the observed `turns`, cumulative `tokens`, `ctx`,
 and observational `cost`, the effective `thinking effort`, and the configured

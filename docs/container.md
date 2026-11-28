@@ -17,9 +17,9 @@
 
 The image is `ghcr.io/eddiectc/acode`: the `acode` binary, `/bin/sh`, git, an SSH
 client, and CA certificates, and **no project toolchain** — a run artifact, not a
-build one. A compiler is yours to add (§6). It is not a sandbox, an approval
-workflow, or a secret store: acode runs with the container user's privileges and
-can reach anything the container can reach ([README](../README.md#isolation)).
+build one. A compiler is yours to add (§6). It is not a sandbox or a secret
+store: acode runs with the container user's privileges and can reach anything
+the container can reach ([isolation](isolation.md)).
 
 ## 1. Quick start: the compose stack
 

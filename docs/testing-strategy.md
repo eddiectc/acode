@@ -131,7 +131,8 @@ pending checks.
 - `-ui-json`: drive `run`, `wait`, `resize`, and `snapshot` at both sizes; check
   frames, SVG, style truncation, and error codes.
 - Images: Kitty and glyph fallbacks, oversized files, and a resumed transcript.
-- Sandbox: `scripts/acode-bwrap` with the documented binds and `--shell`.
+- Sandbox: `scripts/acode-bwrap` with the binds and `--shell` in
+  [isolation.md](isolation.md).
 - Container: run `make dist` and then `make image`, then run the documented
   Podman and Docker invocations in [container.md](container.md), including
   `scripts/acode-docker` and `scripts/acode-podman` from two project
